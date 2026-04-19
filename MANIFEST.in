@@ -1,0 +1,10 @@
+graft app/static
+graft web/src
+include web/package.json
+include web/pnpm-lock.yaml
+include web/vite.config.js
+include web/tailwind.config.js
+include web/postcss.config.js
+include web/components.json
+include web/index.html
+include README.md

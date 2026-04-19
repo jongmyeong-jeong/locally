@@ -1,0 +1,183 @@
+import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+
+import { useAppStore } from '@/stores/app'
+import Recording from '@/pages/Recording'
+
+const { apiMock } = vi.hoisted(() => ({
+  apiMock: {
+    createRecording: vi.fn(),
+    postRecordingChunk: vi.fn(),
+    finalizeRecording: vi.fn(),
+  },
+}))
+
+vi.mock('@/api/client', () => ({
+  default: apiMock,
+}))
+
+vi.mock('@/hooks/use-toast', () => ({
+  useToast: () => ({ toast: vi.fn() }),
+}))
+
+vi.mock('@/components/RecordingWaveform', () => ({
+  default: () => <div data-testid="waveform" />,
+}))
+
+function resetRecordingStore() {
+  useAppStore.setState({
+    recording: {
+      sessionId: null,
+      startedAt: null,
+      elapsedSec: 0,
+      status: 'idle',
+      error: null,
+    },
+  })
+}
+
+describe('Recording', () => {
+  let now
+  let uploadResolve
+  let originalMediaRecorder
+  let originalGetUserMedia
+  let originalAlert
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetRecordingStore()
+
+    now = 0
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+
+    apiMock.createRecording.mockResolvedValue({ id: 'session-1' })
+    apiMock.postRecordingChunk.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          uploadResolve = resolve
+        }),
+    )
+    apiMock.finalizeRecording.mockResolvedValue({ documentId: 'doc-1' })
+
+    const fakeStream = {
+      getTracks: () => [{ stop: vi.fn() }],
+    }
+
+    originalGetUserMedia = navigator.mediaDevices?.getUserMedia
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue(fakeStream),
+      },
+    })
+
+    class FakeMediaRecorder {
+      constructor() {
+        this.state = 'inactive'
+        this.ondataavailable = null
+        this.onstop = null
+      }
+
+      start() {
+        this.state = 'recording'
+      }
+
+      stop() {
+        this.state = 'inactive'
+        setTimeout(() => {
+          this.ondataavailable?.({ data: new Blob(['chunk']) })
+          this.onstop?.()
+        }, 0)
+      }
+
+      requestData() {}
+    }
+
+    originalMediaRecorder = globalThis.MediaRecorder
+    globalThis.MediaRecorder = FakeMediaRecorder
+
+    originalAlert = globalThis.alert
+    globalThis.alert = vi.fn()
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    resetRecordingStore()
+
+    if (originalMediaRecorder === undefined) {
+      delete globalThis.MediaRecorder
+    } else {
+      globalThis.MediaRecorder = originalMediaRecorder
+    }
+
+    if (originalGetUserMedia) {
+      Object.defineProperty(navigator, 'mediaDevices', {
+        configurable: true,
+        value: { getUserMedia: originalGetUserMedia },
+      })
+    }
+
+    globalThis.alert = originalAlert
+  })
+
+  it('waits for pending chunk uploads before finalize', async () => {
+    render(
+      <MemoryRouter>
+        <Recording />
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '녹음 시작' }))
+
+    await waitFor(() => {
+      expect(apiMock.createRecording).toHaveBeenCalledTimes(1)
+    })
+
+    now = 1500
+    fireEvent.click(await screen.findByRole('button', { name: '정지' }))
+
+    await waitFor(() => {
+      expect(apiMock.postRecordingChunk).toHaveBeenCalledTimes(1)
+    })
+
+    expect(apiMock.finalizeRecording).not.toHaveBeenCalled()
+
+    uploadResolve()
+
+    await waitFor(() => {
+      expect(apiMock.finalizeRecording).toHaveBeenCalledWith('session-1', {
+        durationSec: 1.5,
+      })
+    })
+  })
+
+  it('prevents duplicate finalize requests on repeated stop clicks', async () => {
+    render(
+      <MemoryRouter>
+        <Recording />
+      </MemoryRouter>,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '녹음 시작' }))
+
+    await waitFor(() => {
+      expect(apiMock.createRecording).toHaveBeenCalledTimes(1)
+    })
+
+    now = 2000
+    const stopButton = await screen.findByRole('button', { name: '정지' })
+    fireEvent.click(stopButton)
+    fireEvent.click(stopButton)
+
+    await waitFor(() => {
+      expect(apiMock.postRecordingChunk).toHaveBeenCalledTimes(1)
+    })
+
+    uploadResolve()
+
+    await waitFor(() => {
+      expect(apiMock.finalizeRecording).toHaveBeenCalledTimes(1)
+    })
+  })
+})

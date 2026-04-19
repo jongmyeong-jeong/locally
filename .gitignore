@@ -1,0 +1,36 @@
+# OS-generated files
+.DS_Store
+
+# Local audio artifacts
+*.mp3
+*.wav
+*.m4a
+*.webm
+
+# Python caches, virtualenvs, and packaging outputs
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+dist/
+
+# Frontend dependencies and generated assets
+web/node_modules/
+app/static/
+
+# Locally downloaded toolchain binaries
+bin/
+
+# Local AI/agent files
+AGENTS.md
+CLAUDE.md
+.claude/
+.omc/
+.omx/
+state/
+.mcp.json
+.beads/
+.beads-credential-key
