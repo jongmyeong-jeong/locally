@@ -1,7 +1,7 @@
 """OS-branched Whisper model catalog + readiness probe.
 
-Mac (Darwin)  → MLX Whisper (Korean fine-tune).
-Windows/Linux → faster-whisper (CT2; Systran universal).
+Mac (Darwin)  → MLX Whisper (Turbo, Korean fine-tune).
+Windows/Linux → faster-whisper (CT2; Turbo, Korean fine-tune).
 
 model_ready() checks:
   - canonical dir ~/.locally/models/{last-seg}/ exists, AND
@@ -26,9 +26,9 @@ _MAC_ENTRY = {
 }
 
 _NON_MAC_ENTRY = {
-    "id": "Systran/faster-whisper-large-v3",
-    "displayName": "Whisper Large v3 (CTranslate2)",
-    "size_mb": 1500,
+    "id": "ghost613/faster-whisper-large-v3-turbo-korean",
+    "displayName": "Whisper Turbo 한국어 (CTranslate2)",
+    "size_mb": 3240,
     "format": "ct2",
 }
 
