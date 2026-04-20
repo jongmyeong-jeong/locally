@@ -25,6 +25,12 @@ from app.transcribe_parser_mlx import parse_segment_line
 _MODEL = None
 _MODEL_LOCK = threading.Lock()
 
+# Hallucination mitigation thresholds (회의실 잡음/에코 환경)
+_NO_SPEECH_THRESHOLD = 0.85
+_LOGPROB_THRESHOLD = -0.8
+_COMPRESSION_RATIO_THRESHOLD = 2.0
+_HALLUCINATION_SILENCE_THRESHOLD = 1.5  # CT2 전용 (MLX CLI는 --word-timestamps 강제로 파서 깨짐)
+
 
 class TranscriptionError(Exception):
     """Raised when transcription fails for any reason."""
@@ -124,6 +130,17 @@ def _run_mlx(
 
     cmd += ["--clip-timestamps", _clip_arg]
 
+    # Hallucination mitigation (회의실 잡음/에코 환경)
+    # hallucination_silence_threshold 제외: MLX CLI에서 --word-timestamps True를 강제하며
+    # 이는 stdout 포맷을 바꿔 parse_segment_line 파싱을 깨뜨릴 위험이 있음
+    cmd += [
+        "--condition-on-previous-text", "False",
+        "--no-speech-threshold", str(_NO_SPEECH_THRESHOLD),
+        "--logprob-threshold", str(_LOGPROB_THRESHOLD),
+        "--compression-ratio-threshold", str(_COMPRESSION_RATIO_THRESHOLD),
+        "--temperature", "0",
+    ]
+
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
 
@@ -195,7 +212,18 @@ def _run_ct2(
     if model_dir is None:
         raise TranscriptionError("model_dir is required for faster-whisper path")
     model = _get_ct2_model(model_dir)
-    kwargs: dict = {"beam_size": 5, "vad_filter": True}
+    # Hallucination mitigation (회의실 잡음/에코 환경)
+    # log_prob_threshold: faster-whisper는 언더스코어 표기 사용 (MLX의 --logprob-threshold와 다름)
+    kwargs: dict = {
+        "beam_size": 5,
+        "vad_filter": True,
+        "condition_on_previous_text": False,
+        "no_speech_threshold": _NO_SPEECH_THRESHOLD,
+        "log_prob_threshold": _LOGPROB_THRESHOLD,
+        "compression_ratio_threshold": _COMPRESSION_RATIO_THRESHOLD,
+        "hallucination_silence_threshold": _HALLUCINATION_SILENCE_THRESHOLD,
+        "temperature": 0,
+    }
     if prompt:
         kwargs["initial_prompt"] = prompt
     segments_iter, info = model.transcribe(audio_path, **kwargs)  # type: ignore
