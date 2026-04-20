@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "locally"
-version = "0.1.0"
+version = "0.1.1"
 description = "로컬 음성 전사 + 회의록 요약 (CLI + Local Web)"
 requires-python = ">=3.10"
 authors = [{ name = "jongmyeong" }]

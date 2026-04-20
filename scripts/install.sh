@@ -101,7 +101,10 @@ fi
 
 # ── locally ───────────────────────────────────────────────────────────────────
 if command -v locally >/dev/null 2>&1; then
-  ok "locally: already installed"
+  step "Updating locally..."
+  uv tool install --reinstall "$PROJECT_DIR" \
+    || die "locally update failed" "Check error message and retry: make setup"
+  ok "locally: updated"
 else
   step "Installing locally..."
   uv tool install "$PROJECT_DIR" \

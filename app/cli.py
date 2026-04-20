@@ -113,6 +113,14 @@ def start(
 ) -> None:
     """로컬 웹 서버를 시작합니다."""
     import os
+
+    if not os.environ.get("LOCALLY_SKIP_UPDATE"):
+        from app import updater
+        typer.echo(f"{_ARROW} 업데이트 확인 중...")
+        if updater.check_and_apply():
+            typer.echo(f"{_ARROW} 업데이트 완료 — 다시 실행해주세요")
+            raise typer.Exit()
+
     if not os.environ.get("LOCALLY_SKIP_PREFLIGHT"):
         from app import preflight
         preflight.run_preflight(no_browser=no_browser)
