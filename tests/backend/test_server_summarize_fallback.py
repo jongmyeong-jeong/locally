@@ -1,11 +1,8 @@
 """AC-6 fallback test: no AI CLI → SSE `prompt_ready` with copyText contract."""
 from __future__ import annotations
 
-import asyncio
 import json
-from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app import db as db_mod

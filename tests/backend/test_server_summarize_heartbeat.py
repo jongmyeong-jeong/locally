@@ -7,10 +7,8 @@ same elapsed_s into a SSE `ai_waiting` event in producer().
 from __future__ import annotations
 
 import asyncio
-import json
 
 import pytest
-from fastapi.testclient import TestClient
 
 from app import summarize as summarize_mod
 

@@ -1,7 +1,6 @@
 """Tests for app/audio_io.py: FFmpeg-based PCM loader."""
 from __future__ import annotations
 
-import os
 import shutil
 import subprocess
 from pathlib import Path

@@ -1,7 +1,6 @@
 """AC-3 tests for GET /api/system/info: shape for Mac and Windows."""
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient

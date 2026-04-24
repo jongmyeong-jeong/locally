@@ -13,7 +13,6 @@ import json
 import sys
 import threading
 import time
-from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient

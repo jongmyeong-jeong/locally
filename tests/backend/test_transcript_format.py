@@ -1,7 +1,6 @@
 """Tests for app/transcript_format.py: format/parse round-trip."""
 from __future__ import annotations
 
-import pytest
 
 from app import transcript_format as tf
 

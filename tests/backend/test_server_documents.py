@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app import db as db_mod
 from app.server import create_app
 
 
