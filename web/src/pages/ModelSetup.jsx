@@ -108,7 +108,7 @@ export default function ModelSetup() {
 
   return (
     <section className="mx-auto max-w-3xl p-6 space-y-4">
-      <h1 className="text-2xl font-semibold">모델 설정</h1>
+      <h1 className="text-2xl font-semibold">{sysInfo?.modelReady === false ? '모델 다운로드' : '모델 설정'}</h1>
       {sysInfo && (
         <p className="text-sm text-muted-foreground">
           {sysInfo.os} · {sysInfo.arch} ·

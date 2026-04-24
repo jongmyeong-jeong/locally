@@ -86,12 +86,10 @@ export default function OSModelSelection({
                 {progress.downloaded_mb} / {progress.total_mb} MB (
                 {Math.round((progress.percent || 0) * 100)}%)
               </div>
-              {(progress.speed_mbps > 0 || progress.eta_seconds != null) && (
-                <div className="text-xs text-muted-foreground">
-                  {progress.speed_mbps > 0 && `${progress.speed_mbps.toFixed(1)} MB/s · `}
-                  {formatEta(progress.eta_seconds)}
-                </div>
-              )}
+              <div className="text-xs text-muted-foreground">
+                {progress.speed_mbps > 0 && `${progress.speed_mbps.toFixed(1)} MB/s · `}
+                {formatEta(progress.eta_seconds)}
+              </div>
             </div>
           )}
           {error && (
