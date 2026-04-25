@@ -35,6 +35,26 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at DESC)",
 )
 
+_SCHEMA_CHUNKS = """
+CREATE TABLE IF NOT EXISTS recording_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    start_ms INTEGER NOT NULL,
+    end_ms INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('queued','transcribing','success','retry','failed')),
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    text TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(document_id, seq)
+)
+"""
+
+_INDEXES_CHUNKS = (
+    "CREATE INDEX IF NOT EXISTS idx_recording_chunks_document ON recording_chunks(document_id, seq)",
+)
+
 _ALLOWED_UPDATE_COLUMNS = {
     "title",
     "status",
@@ -68,6 +88,9 @@ def migrate(conn: sqlite3.Connection) -> None:
     """Idempotent schema creation."""
     conn.execute(_SCHEMA)
     for stmt in _INDEXES:
+        conn.execute(stmt)
+    conn.execute(_SCHEMA_CHUNKS)
+    for stmt in _INDEXES_CHUNKS:
         conn.execute(stmt)
     conn.commit()
 

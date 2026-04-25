@@ -17,7 +17,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Literal, Optional
 
 from app.transcribe_parser_ct2 import wrap_generator as _wrap_ct2
 from app.transcribe_parser_mlx import parse_segment_line
@@ -30,6 +30,11 @@ _NO_SPEECH_THRESHOLD = 0.85
 _LOGPROB_THRESHOLD = -0.8
 _COMPRESSION_RATIO_THRESHOLD = 2.0
 _HALLUCINATION_SILENCE_THRESHOLD = 1.5  # CT2 전용 (MLX CLI는 --word-timestamps 강제로 파서 깨짐)
+
+THRESHOLD_PROFILE: dict[str, dict[str, float]] = {
+    "file": {"no_speech_threshold": 0.85, "hallucination_silence_threshold": 1.5},
+    "chunk": {"no_speech_threshold": 0.90, "hallucination_silence_threshold": 3.0},
+}
 
 
 class TranscriptionError(Exception):
@@ -73,6 +78,7 @@ def _run_mlx(
     model_dir: str | None,
     prompt: str | None,
     progress_cb: Optional[Callable[[dict], None]],
+    profile: Literal["file", "chunk"] = "file",
 ) -> tuple[str, list[dict]]:
     """Invoke mlx_whisper as a subprocess; parse stdout lines for segments and progress.
 
@@ -131,11 +137,13 @@ def _run_mlx(
     cmd += ["--clip-timestamps", _clip_arg]
 
     # Hallucination mitigation (회의실 잡음/에코 환경)
-    # hallucination_silence_threshold 제외: MLX CLI에서 --word-timestamps True를 강제하며
-    # 이는 stdout 포맷을 바꿔 parse_segment_line 파싱을 깨뜨릴 위험이 있음
+    # NOTE: hallucination_silence_threshold is intentionally NOT passed to mlx-whisper CLI.
+    # The flag breaks stdout JSON parsing. Only no_speech_threshold is applied on the MLX path.
+    # CT2 path (_run_ct2) applies both thresholds via WhisperModel.transcribe() kwargs.
+    _thresholds = THRESHOLD_PROFILE[profile]
     cmd += [
         "--condition-on-previous-text", "False",
-        "--no-speech-threshold", str(_NO_SPEECH_THRESHOLD),
+        "--no-speech-threshold", str(_thresholds["no_speech_threshold"]),
         "--logprob-threshold", str(_LOGPROB_THRESHOLD),
         "--compression-ratio-threshold", str(_COMPRESSION_RATIO_THRESHOLD),
         "--temperature", "0",
@@ -208,20 +216,22 @@ def _run_ct2(
     model_dir: str | None,
     prompt: str | None,
     progress_cb: Optional[Callable[[dict], None]],
+    profile: Literal["file", "chunk"] = "file",
 ) -> tuple[str, list[dict]]:
     if model_dir is None:
         raise TranscriptionError("model_dir is required for faster-whisper path")
     model = _get_ct2_model(model_dir)
     # Hallucination mitigation (회의실 잡음/에코 환경)
     # log_prob_threshold: faster-whisper는 언더스코어 표기 사용 (MLX의 --logprob-threshold와 다름)
+    _thresholds = THRESHOLD_PROFILE[profile]
     kwargs: dict = {
         "beam_size": 5,
         "vad_filter": True,
         "condition_on_previous_text": False,
-        "no_speech_threshold": _NO_SPEECH_THRESHOLD,
+        "no_speech_threshold": _thresholds["no_speech_threshold"],
         "log_prob_threshold": _LOGPROB_THRESHOLD,
         "compression_ratio_threshold": _COMPRESSION_RATIO_THRESHOLD,
-        "hallucination_silence_threshold": _HALLUCINATION_SILENCE_THRESHOLD,
+        "hallucination_silence_threshold": _thresholds["hallucination_silence_threshold"],
         "temperature": 0,
     }
     if prompt:
@@ -245,6 +255,7 @@ def run(
     model_dir: str | None = None,
     prompt: str | None = None,
     progress_cb: Optional[Callable[[dict], None]] = None,
+    profile: Literal["file", "chunk"] = "file",
 ) -> tuple[str, list[dict]]:
     """OS-branched transcription.
 
@@ -259,12 +270,14 @@ def run(
             model_dir=model_dir,
             prompt=prompt,
             progress_cb=progress_cb,
+            profile=profile,
         )
     return _run_ct2(
         audio_path,
         model_dir=model_dir,
         prompt=prompt,
         progress_cb=progress_cb,
+        profile=profile,
     )
 
 
