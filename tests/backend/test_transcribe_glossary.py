@@ -5,9 +5,7 @@ as the `prompt` argument to transcribe.run, and passes None when glossary is emp
 """
 from __future__ import annotations
 
-from pathlib import Path
 
-import pytest
 from fastapi.testclient import TestClient
 
 from app import glossary as glossary_mod
