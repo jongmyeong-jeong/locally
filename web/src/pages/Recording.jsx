@@ -252,11 +252,7 @@ export default function Recording() {
 
     setRecording({ status: 'finalizing' })
 
-    try {
-      const result = await api.finalizeRecording(sessionId, {
-        ...(title ? { title } : {}),
-        durationSec,
-      })
+    const cleanupRefs = () => {
       resetRecording()
       sessionIdRef.current = null
       startedAtRef.current = null
@@ -264,25 +260,57 @@ export default function Recording() {
       pendingUploadsRef.current.clear()
       stopInFlightRef.current = false
       setElapsedSec(0)
-      navigate(`/documents/${result.documentId}/transcribing`)
-    } catch (err) {
-      const body = err?.body
-      if (body?.error === 'missing chunks') {
-        toast({
-          description: `누락된 청크가 있어 저장에 실패했습니다 (${(body.missing ?? []).length}개)`,
-          variant: 'destructive',
-        })
-      } else if (body?.error === 'recording too short') {
-        alert('녹음 길이가 1초 미만입니다')
-      } else {
-        toast({
-          description: `녹음 저장 실패: ${err?.message ?? ''}`,
-          variant: 'destructive',
-        })
-      }
-      stopInFlightRef.current = false
-      setRecording({ status: 'error', error: err?.message ?? '저장 실패' })
     }
+
+    api.finalizeRecording(
+      sessionId,
+      {
+        ...(title ? { title } : {}),
+        durationSec,
+      },
+      {
+        complete: (evt) => {
+          cleanupRefs()
+          navigate(`/documents/${evt.payload.documentId}`)
+        },
+        error: (evt) => {
+          const errVal = evt.payload?.error
+          if (errVal === 'missing chunks') {
+            toast({
+              description: `누락된 청크가 있어 저장에 실패했습니다 (${(evt.payload.missing ?? []).length}개)`,
+              variant: 'destructive',
+            })
+          } else if (errVal === 'recording too short') {
+            alert('녹음 길이가 1초 미만입니다')
+          } else {
+            toast({
+              description: `녹음 저장 실패: ${errVal ?? '알 수 없는 오류'}`,
+              variant: 'destructive',
+            })
+          }
+          stopInFlightRef.current = false
+          setRecording({ status: 'error', error: errVal ?? '저장 실패' })
+        },
+        transportError: (err) => {
+          const body = err?.body
+          if (err?.status === 400 && body?.error === 'recording too short') {
+            alert('녹음 길이가 1초 미만입니다')
+          } else if (err?.status === 400 && body?.error === 'missing chunks') {
+            toast({
+              description: `누락된 청크가 있어 저장에 실패했습니다 (${(body.missing ?? []).length}개)`,
+              variant: 'destructive',
+            })
+          } else {
+            toast({
+              description: `녹음 저장 실패: ${err?.message ?? ''}`,
+              variant: 'destructive',
+            })
+          }
+          stopInFlightRef.current = false
+          setRecording({ status: 'error', error: err?.message ?? '저장 실패' })
+        },
+      },
+    )
   }, [title, toast, clearTimer, stopTracks, resetRecording, setRecording, navigate, waitForPendingUploads])
 
   // beforeunload: if actively recording, ask `ondataavailable` to flush a final

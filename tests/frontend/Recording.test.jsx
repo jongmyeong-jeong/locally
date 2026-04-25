@@ -58,7 +58,15 @@ describe('Recording', () => {
           uploadResolve = resolve
         }),
     )
-    apiMock.finalizeRecording.mockResolvedValue({ documentId: 'doc-1' })
+    apiMock.finalizeRecording.mockImplementation((_id, _body, handlers) => {
+      if (handlers) {
+        Promise.resolve().then(() =>
+          handlers.complete({ payload: { documentId: 'doc-1' } }),
+        )
+        return () => {}
+      }
+      return Promise.resolve({ documentId: 'doc-1' })
+    })
 
     const fakeStream = {
       getTracks: () => [{ stop: vi.fn() }],
@@ -145,9 +153,11 @@ describe('Recording', () => {
     uploadResolve()
 
     await waitFor(() => {
-      expect(apiMock.finalizeRecording).toHaveBeenCalledWith('session-1', {
-        durationSec: 1.5,
-      })
+      expect(apiMock.finalizeRecording).toHaveBeenCalledWith(
+        'session-1',
+        { durationSec: 1.5 },
+        expect.objectContaining({ complete: expect.any(Function) }),
+      )
     })
   })
 
