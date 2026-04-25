@@ -89,6 +89,11 @@ class SessionTranscribeQueue:
             await self._worker_task
 
     @property
+    def glossary_prompt(self) -> str | None:
+        """Glossary prompt string passed at queue creation time."""
+        return self._glossary_prompt
+
+    @property
     def failed_ranges(self) -> list[dict]:
         """List of {seq, start_ms, end_ms} for chunks that ended in 'failed'."""
         return list(self._failed_ranges)

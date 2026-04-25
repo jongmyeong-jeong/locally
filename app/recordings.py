@@ -195,12 +195,18 @@ def _attach_document_id(session_id: str, document_id: str) -> str:
         return session.document_id
 
 
+def get_active_session_count() -> int:
+    """Return the number of currently active recording sessions."""
+    return len(_SESSIONS)
+
+
 def finalize(
     conn: sqlite3.Connection,
     session_id: str,
     *,
     title: str | None = None,
     duration_sec: float | None = None,
+    live: bool = False,
 ) -> dict:
     """Validate contiguous seqs, move file to audio_dir, update document.
 
@@ -252,10 +258,12 @@ def finalize(
         except FileNotFoundError:
             pass
 
+    # live=True → 'finalizing' (real-time pre-transcription path); default 'pending' for legacy file-upload finalize
+    status = "finalizing" if live else "pending"
     update_document(
         conn,
         session.document_id,
-        status="pending",
+        status=status,
         audio_path=str(dest),
     )
 

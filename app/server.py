@@ -95,6 +95,11 @@ def _any_model_ready() -> bool:
     return any(models_catalog.model_ready(e["id"]) for e in catalog)
 
 
+def _active_recording_exists() -> bool:
+    """True if any live recording session is currently active."""
+    return recordings_mod.get_active_session_count() > 0
+
+
 def _ffmpeg_extract_range(
     session_webm: str, start_ms: int, end_ms: int, out_path: str
 ) -> None:
@@ -1003,8 +1008,7 @@ def create_app() -> FastAPI:
             )
 
         # 2. Concurrent-recording guard.
-        # TODO(lnv.15): replace with recordings_mod.get_active_session_count() once exposed.
-        if len(recordings_mod._SESSIONS) > 0:
+        if _active_recording_exists():
             return JSONResponse(
                 status_code=409,
                 content={"error": "concurrent_recording"},
@@ -1021,9 +1025,9 @@ def create_app() -> FastAPI:
         ready = [e for e in catalog if models_catalog.model_ready(e["id"])]
         model_dir = str(models_catalog.model_dir_for(ready[0]["id"])) if ready else None
 
-        # 5. TODO(lnv.9): load glossary and pass as glossary_prompt here.
-        #    For now pass None; Step 7 (lnv.9) will replace this.
-        glossary_prompt: str | None = None
+        # 5. Load glossary for chunk transcription (live recording path only).
+        glossary_terms = glossary_mod.load()
+        glossary_prompt: str | None = ", ".join(glossary_terms) if glossary_terms else None
 
         # 6. Create per-session transcription queue and start the worker.
         queue = await transcribe_queue.create_session_queue(
@@ -1154,7 +1158,7 @@ def create_app() -> FastAPI:
 
         async def producer(queue: asyncio.Queue[bytes | None]) -> None:
             try:
-                # 1. Finalize session — move webm to audio_dir, set status='pending'.
+                # 1. Finalize session — move webm to audio_dir, set status='finalizing'.
                 try:
                     with db_mod.open_db() as conn:
                         result = recordings_mod.finalize(
@@ -1162,6 +1166,7 @@ def create_app() -> FastAPI:
                             session_id,
                             title=title,
                             duration_sec=duration,
+                            live=True,
                         )
                 except recordings_mod.ChunkGapError as exc:
                     await queue.put(
@@ -1209,12 +1214,6 @@ def create_app() -> FastAPI:
                 document_id: str = result["documentId"]
                 session_audio_path: str = result["audioPath"]
 
-                # Set status to 'finalizing'.
-                # TODO(lnv.10): refactor recordings.finalize to accept live=True
-                # and set 'finalizing' internally; remove this post-update then.
-                with db_mod.open_db() as conn:
-                    db_mod.update_document(conn, document_id, status="finalizing")
-
                 # Determine model_dir (same logic as create_recording).
                 catalog = models_catalog.catalog_for_current_os()
                 ready_models = [
@@ -1225,8 +1224,11 @@ def create_app() -> FastAPI:
                     if ready_models
                     else None
                 )
-                # TODO(lnv.9): load glossary_prompt from glossary_mod here.
-                glossary_prompt: str | None = None
+                # Read glossary_prompt from the session queue (set at create_recording time).
+                _sq_for_glossary = await transcribe_queue.get_session_queue(session_id)
+                glossary_prompt: str | None = (
+                    _sq_for_glossary.glossary_prompt if _sq_for_glossary is not None else None
+                )
 
                 # 2. Flush VAD detector to emit any trailing audio boundary.
                 detector = _VAD_DETECTORS.get(session_id)
