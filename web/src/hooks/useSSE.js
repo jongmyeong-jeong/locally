@@ -25,6 +25,8 @@ export function useFinalizePoller({
   enabled,
   fetchDocument,
   onSettled,
+  onTimeout,
+  onError,
   intervalMs = POLL_INTERVAL_MS,
   maxPolls = MAX_POLLS,
 }) {
@@ -32,11 +34,21 @@ export function useFinalizePoller({
   const pollCountRef = useRef(0)
   const timerRef = useRef(null)
   const onSettledRef = useRef(onSettled)
+  const onTimeoutRef = useRef(onTimeout)
+  const onErrorRef = useRef(onError)
 
   // onSettled 최신 참조 유지 (stale closure 방지)
   useEffect(() => {
     onSettledRef.current = onSettled
   }, [onSettled])
+
+  useEffect(() => {
+    onTimeoutRef.current = onTimeout
+  }, [onTimeout])
+
+  useEffect(() => {
+    onErrorRef.current = onError
+  }, [onError])
 
   const stop = useCallback(() => {
     activeRef.current = false
@@ -64,6 +76,7 @@ export function useFinalizePoller({
       if (pollCountRef.current >= maxPolls) {
         // 타임아웃 — 폴링 중단 (서버 측에서 stuck된 경우)
         stop()
+        onTimeoutRef.current?.()
         return
       }
 
@@ -72,9 +85,15 @@ export function useFinalizePoller({
       let doc
       try {
         doc = await fetchDocument()
-      } catch {
+      } catch (error) {
         // 네트워크 오류 — 재시도 예정
         if (!activeRef.current) return
+        const status = error?.status
+        if (status >= 400 && status < 500 && status !== 408 && status !== 429) {
+          stop()
+          onErrorRef.current?.(error)
+          return
+        }
         timerRef.current = setTimeout(poll, intervalMs)
         return
       }
@@ -84,7 +103,7 @@ export function useFinalizePoller({
       const { status } = doc
       if (status === 'transcribed' || status === 'transcription_failed') {
         stop()
-        onSettledRef.current(status)
+        onSettledRef.current(doc)
         return
       }
 

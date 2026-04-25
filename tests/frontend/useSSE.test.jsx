@@ -38,7 +38,7 @@ vi.mock('@/hooks/useSSE', async (importOriginal) => {
   return {
     ...actual,
     useFinalizePoller: (opts) =>
-      actual.useFinalizePoller({ ...opts, intervalMs: 0 }),
+      actual.useFinalizePoller({ ...opts, intervalMs: 0, maxPolls: 3 }),
   }
 })
 
@@ -95,6 +95,9 @@ describe('Summary — finalizing state recovery', () => {
       expect(screen.getByText(/녹음을 처리하고 있어요/)).toBeInTheDocument()
     })
 
+    expect(api.getSummary).not.toHaveBeenCalled()
+    expect(api.getTranscript).not.toHaveBeenCalled()
+
     // finalizing 상태에서는 탭 UI가 보이면 안 됨
     expect(screen.queryAllByRole('tab')).toHaveLength(0)
     expect(screen.queryByRole('button', { name: 'AI로 요약' })).not.toBeInTheDocument()
@@ -108,6 +111,43 @@ describe('Summary — finalizing state recovery', () => {
     await waitFor(() => {
       expect(screen.queryByText(/녹음을 처리하고 있어요/)).not.toBeInTheDocument()
     }, { timeout: 3000 })
+  })
+
+  it('(d) finalizing poll timeout — shows recovery UI and stops hidden fetches', async () => {
+    api.getDocument.mockResolvedValue({ id: 'doc-1', status: 'finalizing' })
+
+    renderSummary('doc-1')
+
+    await waitFor(() => {
+      expect(screen.getByText(/녹음을 처리하고 있어요/)).toBeInTheDocument()
+    })
+
+    expect(api.getSummary).not.toHaveBeenCalled()
+    expect(api.getTranscript).not.toHaveBeenCalled()
+
+    await waitFor(() => {
+      expect(screen.getByText(/처리가 예상보다 오래 걸리고 있어요/)).toBeInTheDocument()
+    })
+  })
+
+  it('(e) finalizing poll 404 — stops retrying and shows recovery UI', async () => {
+    api.getDocument
+      .mockResolvedValueOnce({ id: 'doc-1', status: 'finalizing' })
+      .mockRejectedValue(Object.assign(new Error('gone'), { status: 404 }))
+
+    renderSummary('doc-1')
+
+    await waitFor(() => {
+      expect(screen.getByText(/녹음을 처리하고 있어요/)).toBeInTheDocument()
+    })
+
+    await waitFor(() => {
+      expect(screen.getByText(/문서 상태를 다시 확인해 주세요/)).toBeInTheDocument()
+    })
+
+    const callCount = api.getDocument.mock.calls.length
+    await new Promise((r) => setTimeout(r, 50))
+    expect(api.getDocument.mock.calls.length).toBe(callCount)
   })
 
   it('(b) status=transcription_failed — FailedTranscriptionBlock 표시', async () => {

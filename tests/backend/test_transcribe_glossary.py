@@ -9,6 +9,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app import glossary as glossary_mod
+from app import paths
 from app import transcribe as transcribe_mod
 from app.server import create_app
 
@@ -64,6 +65,28 @@ class TestTranscribeGlossaryInjection:
         mock_platform("Darwin", "arm64")
 
         # Ensure no glossary file exists (tmp_home is fresh).
+        calls: list = []
+        monkeypatch.setattr(transcribe_mod, "run", _fake_run_capture(calls))
+
+        app = create_app()
+        with TestClient(app) as c:
+            doc_id = _create_doc_with_audio(c, tmp_home)
+            r = c.post(f"/api/documents/{doc_id}/transcribe")
+            assert r.status_code == 200
+
+        assert len(calls) == 1
+        assert calls[0]["prompt"] is None
+
+    def test_malformed_glossary_falls_back_to_none_prompt(
+        self, tmp_home, mock_platform, monkeypatch
+    ):
+        """malformed glossary.json이어도 전사는 계속되고 prompt=None으로 fallback된다."""
+        mock_platform("Darwin", "arm64")
+
+        glossary_path = paths.glossary_path()
+        glossary_path.parent.mkdir(parents=True, exist_ok=True)
+        glossary_path.write_text("{not-json", encoding="utf-8")
+
         calls: list = []
         monkeypatch.setattr(transcribe_mod, "run", _fake_run_capture(calls))
 

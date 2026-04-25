@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import ReactMarkdown from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 
 import api from '@/api/client'
 import { qk } from '@/lib/queryKeys'
@@ -19,6 +17,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 //   complete:     { summaryPath }
 //   error:        { message, canRetry }
 
+const SummaryMarkdown = lazy(() => import('@/components/SummaryMarkdown'))
 const PROMPT_PREFIX = '다음 전사 내용을 한국어 회의록으로 정리해주세요'
 
 function PromptSelect({ prompts, value, onChange }) {
@@ -101,6 +100,7 @@ export default function Summary() {
   const { toast } = useToast()
   const [aiWaiting, setAiWaiting] = useState(null)
   const [streamError, setStreamError] = useState(null)
+  const [finalizePollIssue, setFinalizePollIssue] = useState(null)
   const [inProgress, setInProgress] = useState(false)
   const [activeTab, setActiveTab] = useState(null)
   const disposeRef = useRef(null)
@@ -119,21 +119,39 @@ export default function Summary() {
   const isFailed = documentQ.data?.status === 'transcription_failed'
   const isServerFinalizing = documentQ.data?.status === 'finalizing'
 
+  const disposeSummarizeStream = useCallback(() => {
+    if (disposeRef.current) {
+      disposeRef.current()
+      disposeRef.current = null
+    }
+  }, [])
+
   // 폴링: 서버에서 finalizing 상태인 문서는 transcribed/transcription_failed가 될 때까지 폴링
   const fetchDocumentForPoll = useCallback(() => api.getDocument(id), [id])
   useFinalizePoller({
-    enabled: isServerFinalizing,
+    enabled: isServerFinalizing && !finalizePollIssue,
     fetchDocument: fetchDocumentForPoll,
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: qk.document(id) })
+    onSettled: (doc) => {
+      setFinalizePollIssue(null)
+      qc.setQueryData(qk.document(id), doc)
       qc.invalidateQueries({ queryKey: qk.documents() })
+    },
+    onTimeout: () => {
+      setFinalizePollIssue({
+        message: '처리가 예상보다 오래 걸리고 있어요. 문서 상태를 다시 확인해 주세요.',
+      })
+    },
+    onError: () => {
+      setFinalizePollIssue({
+        message: '문서 상태를 다시 확인해 주세요.',
+      })
     },
   })
 
   const summaryQ = useQuery({
     queryKey: qk.summary(id),
     queryFn: () => api.getSummary(id),
-    enabled: !!id,
+    enabled: !!id && documentQ.isSuccess && !isServerFinalizing,
     retry: false,
   })
 
@@ -148,7 +166,7 @@ export default function Summary() {
   const transcriptQ = useQuery({
     queryKey: qk.transcript(id),
     queryFn: () => api.getTranscript(id),
-    enabled: shouldFetchTranscript,
+    enabled: documentQ.isSuccess && !isServerFinalizing && shouldFetchTranscript,
     retry: false,
   })
 
@@ -168,15 +186,22 @@ export default function Summary() {
 
   // Set default tab once summaryQ resolves (one-shot).
   useEffect(() => {
+    if (isServerFinalizing) return
     if (activeTab !== null) return
     if (summaryQ.isSuccess && summaryQ.data?.content) setActiveTab('summary')
     else if (summaryQ.isError || summaryQ.isSuccess) setActiveTab('transcript')
-  }, [summaryQ.isSuccess, summaryQ.isError, activeTab])
+  }, [summaryQ.isSuccess, summaryQ.isError, activeTab, isServerFinalizing])
 
   // Cleanup SSE stream on unmount.
   useEffect(() => {
-    return () => { if (disposeRef.current) disposeRef.current() }
-  }, [])
+    return disposeSummarizeStream
+  }, [disposeSummarizeStream])
+
+  useEffect(() => {
+    if (!isServerFinalizing) {
+      setFinalizePollIssue(null)
+    }
+  }, [isServerFinalizing])
 
   const summaryState =
     inProgress ? 'in_progress' :
@@ -186,9 +211,11 @@ export default function Summary() {
 
   const onStartSummarize = () => {
     if (inProgress) return
+    disposeSummarizeStream()
     setStreamError(null)
     setAiWaiting(null)
     setInProgress(true)
+    serverPromptRef.current = null
     setActiveTab('summary') // one-shot tab switch on click (AC-5)
     disposeRef.current = api.postSse(
       `/api/documents/${encodeURIComponent(id)}/summarize`,
@@ -196,6 +223,7 @@ export default function Summary() {
       {
         ai_waiting: (evt) => setAiWaiting(evt.payload?.elapsed_s ?? 0),
         complete: () => {
+          disposeSummarizeStream()
           setInProgress(false)
           qc.invalidateQueries({ queryKey: qk.document(id) })
           qc.invalidateQueries({ queryKey: qk.summary(id) })
@@ -203,6 +231,7 @@ export default function Summary() {
           // Intentionally no setActiveTab — respects user tab choice (AC-6).
         },
         error: (evt) => {
+          disposeSummarizeStream()
           setInProgress(false)
           const p = evt.payload || {}
           setStreamError({
@@ -213,6 +242,7 @@ export default function Summary() {
         prompt_ready: (evt) => {
           // No AI CLI on server: backend emits prompt_ready then closes stream.
           // Route to error branch so both buttons are visible (AC-8).
+          disposeSummarizeStream()
           setInProgress(false)
           serverPromptRef.current = evt.payload?.copyText ?? null
           setStreamError({
@@ -221,6 +251,7 @@ export default function Summary() {
           })
         },
         transportError: (err) => {
+          disposeSummarizeStream()
           setInProgress(false)
           if (err?.status === 409) {
             toast({ description: '이미 다른 탭에서 요약 중입니다' })
@@ -266,6 +297,11 @@ export default function Summary() {
     }
   }
 
+  const onRetryFinalizePoll = () => {
+    setFinalizePollIssue(null)
+    qc.invalidateQueries({ queryKey: qk.document(id) })
+  }
+
   return (
     <section className="mx-auto max-w-3xl p-6 space-y-4">
       <div className="flex items-center justify-between">
@@ -275,7 +311,18 @@ export default function Summary() {
         </Button>
       </div>
 
-      {isServerFinalizing ? (
+      {isServerFinalizing && finalizePollIssue ? (
+        <Card>
+          <CardContent className="py-8 space-y-4">
+            <p className="text-sm text-center text-destructive">
+              {finalizePollIssue.message}
+            </p>
+            <div className="flex justify-center">
+              <Button variant="outline" onClick={onRetryFinalizePoll}>다시 확인</Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : isServerFinalizing ? (
         <Card>
           <CardContent className="py-8 text-center text-sm text-muted-foreground">
             <p>녹음을 처리하고 있어요. 잠시 기다려 주세요...</p>
@@ -306,9 +353,9 @@ export default function Summary() {
             {summaryState === 'completed' && (
               <Card>
                 <CardContent className="prose prose-sm max-w-none py-6 dark:prose-invert">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {summaryQ.data?.content || ''}
-                  </ReactMarkdown>
+                  <Suspense fallback={<p className="text-sm text-muted-foreground">요약을 불러오는 중...</p>}>
+                    <SummaryMarkdown content={summaryQ.data?.content || ''} />
+                  </Suspense>
                 </CardContent>
                 <CardContent className="flex flex-wrap items-center justify-center gap-2 border-t pt-4">
                   <PromptSelect

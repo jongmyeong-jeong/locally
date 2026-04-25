@@ -60,38 +60,81 @@ def _make_silent_wav(path: Path, duration_sec: float = 0.5, sample_rate: int = 1
 # Core measurement logic
 # ---------------------------------------------------------------------------
 
-def _time_one_call(wav_path: str, python_exe: str, model_dir: str | None) -> tuple[float, int]:
-    """Invoke mlx_whisper on one WAV; return (elapsed_sec, returncode)."""
-    cmd = [
-        python_exe,
-        "-u",
-        "-m",
-        "mlx_whisper.cli",
-        wav_path,
-        "--output-format", "txt",
-        "--output-dir", tempfile.mkdtemp(prefix="mlx_measure_"),
-        "--condition-on-previous-text", "False",
-        "--no-speech-threshold", "0.85",
-        "--logprob-threshold", "-0.8",
-        "--compression-ratio-threshold", "2.0",
-        "--temperature", "0",
-        "--clip-timestamps", "0",
-    ]
-    if model_dir:
-        cmd += ["--model", model_dir]
+def _resolve_python_exe(
+    project_root: Path | None = None,
+    current_exe: str | None = None,
+) -> str:
+    """Prefer the project venv interpreter when present."""
+    root = project_root or Path(__file__).resolve().parent.parent
+    active = Path(current_exe or sys.executable)
+    venv_python = root / ".venv" / "bin" / "python"
+    if venv_python.exists():
+        return str(venv_python)
+    return str(active)
 
-    env = os.environ.copy()
-    env["PYTHONUNBUFFERED"] = "1"
 
-    t0 = time.monotonic()
-    proc = subprocess.run(
-        cmd,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    elapsed = time.monotonic() - t0
-    return elapsed, proc.returncode
+def _validate_args(
+    parser: argparse.ArgumentParser,
+    *,
+    n_files: int,
+    duration_sec: float,
+    timeout_s: float,
+) -> None:
+    if n_files < 1:
+        parser.error("--n-files must be >= 1")
+    if duration_sec <= 0:
+        parser.error("--duration must be > 0")
+    if timeout_s <= 0:
+        parser.error("--timeout must be > 0")
+
+
+def _time_one_call(
+    wav_path: str,
+    python_exe: str,
+    model_dir: str | None,
+    *,
+    timeout_s: float,
+) -> tuple[float, int, bool]:
+    """Invoke mlx_whisper on one WAV; return (elapsed_sec, returncode, timed_out)."""
+    timed_out = False
+    with tempfile.TemporaryDirectory(prefix="mlx_measure_") as output_dir:
+        cmd = [
+            python_exe,
+            "-u",
+            "-m",
+            "mlx_whisper.cli",
+            wav_path,
+            "--output-format", "txt",
+            "--output-dir", output_dir,
+            "--condition-on-previous-text", "False",
+            "--no-speech-threshold", "0.85",
+            "--logprob-threshold", "-0.8",
+            "--compression-ratio-threshold", "2.0",
+            "--temperature", "0",
+            "--clip-timestamps", "0",
+        ]
+        if model_dir:
+            cmd += ["--model", model_dir]
+
+        env = os.environ.copy()
+        env["PYTHONUNBUFFERED"] = "1"
+
+        t0 = time.monotonic()
+        try:
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=env,
+                timeout=timeout_s,
+                check=False,
+            )
+            returncode = proc.returncode
+        except subprocess.TimeoutExpired:
+            timed_out = True
+            returncode = 124
+        elapsed = time.monotonic() - t0
+        return elapsed, returncode, timed_out
 
 
 def run_measurement(
@@ -99,11 +142,11 @@ def run_measurement(
     duration_sec: float = 0.5,
     model_dir: str | None = None,
     python_exe: str | None = None,
+    timeout_s: float = 60.0,
 ) -> dict:
     """Run n_files sequential subprocess calls; return timing stats."""
     if python_exe is None:
-        # Use the same Python that runs this script (should be venv Python).
-        python_exe = sys.executable
+        python_exe = _resolve_python_exe()
 
     results: list[dict] = []
 
@@ -119,17 +162,37 @@ def run_measurement(
               f"(each: {duration_sec}s silent WAV)")
         print(f"Python: {python_exe}")
         print(f"Model:  {model_dir or '(default)'}")
+        print(f"Timeout:{timeout_s}s / call")
         print()
 
         col_w = 20
-        print(f"{'call':<6}  {'wav':<{col_w}}  {'elapsed_s':>10}  {'returncode':>10}")
-        print("-" * (6 + 2 + col_w + 2 + 10 + 2 + 10))
+        print(
+            f"{'call':<6}  {'wav':<{col_w}}  {'elapsed_s':>10}  "
+            f"{'returncode':>10}  {'timed_out':>10}"
+        )
+        print("-" * (6 + 2 + col_w + 2 + 10 + 2 + 10 + 2 + 10))
 
         wall_start = time.monotonic()
         for i, wav_path in enumerate(wav_paths):
-            elapsed, rc = _time_one_call(wav_path, python_exe, model_dir)
-            results.append({"index": i, "wav": Path(wav_path).name, "elapsed_s": elapsed, "returncode": rc})
-            print(f"{i:<6}  {Path(wav_path).name:<{col_w}}  {elapsed:>10.3f}  {rc:>10}")
+            elapsed, rc, timed_out = _time_one_call(
+                wav_path,
+                python_exe,
+                model_dir,
+                timeout_s=timeout_s,
+            )
+            results.append(
+                {
+                    "index": i,
+                    "wav": Path(wav_path).name,
+                    "elapsed_s": elapsed,
+                    "returncode": rc,
+                    "timed_out": timed_out,
+                }
+            )
+            print(
+                f"{i:<6}  {Path(wav_path).name:<{col_w}}  {elapsed:>10.3f}  "
+                f"{rc:>10}  {str(timed_out):>10}"
+            )
         wall_total = time.monotonic() - wall_start
 
     times = [r["elapsed_s"] for r in results]
@@ -144,7 +207,8 @@ def run_measurement(
     print(f"{'max_s':<20}: {max_s:.3f}")
     print(f"{'min_s':<20}: {min_s:.3f}")
     print(f"{'errors':<20}: {errors}")
-    conclusion = "PASS (<=30 s)" if wall_total <= 30.0 else "FAIL (>30 s)"
+    within_30s = wall_total <= 30.0 and errors == 0
+    conclusion = "PASS (<=30 s, rc=0)" if within_30s else "FAIL (>30 s or errors)"
     print(f"{'conclusion':<20}: {conclusion}")
 
     return {
@@ -157,7 +221,7 @@ def run_measurement(
         "max_s": max_s,
         "min_s": min_s,
         "errors": errors,
-        "within_30s": wall_total <= 30.0,
+        "within_30s": within_30s,
         "per_call": results,
     }
 
@@ -197,11 +261,14 @@ def write_report(stats: dict, report_path: Path) -> None:
         "",
         "### 콜별 상세",
         "",
-        "| call | wav | elapsed_s | rc |",
-        "|------|-----|-----------|----|",
+        "| call | wav | elapsed_s | rc | timed_out |",
+        "|------|-----|-----------|----|-----------|",
     ]
     for r in stats["per_call"]:
-        lines.append(f"| {r['index']} | {r['wav']} | {r['elapsed_s']:.3f} | {r['returncode']} |")
+        lines.append(
+            f"| {r['index']} | {r['wav']} | {r['elapsed_s']:.3f} | "
+            f"{r['returncode']} | {r['timed_out']} |"
+        )
 
     lines += [
         "",
@@ -256,21 +323,33 @@ def main() -> None:
         help="Duration of each synthetic WAV in seconds (default: 0.5)",
     )
     parser.add_argument(
+        "--timeout",
+        type=float,
+        default=60.0,
+        help="Per-call timeout in seconds (default: 60)",
+    )
+    parser.add_argument(
         "--report",
         default=None,
         metavar="FILE",
         help="Override report output path (default: .omc/research/mlx-subprocess-delay.md)",
     )
     args = parser.parse_args()
+    _validate_args(
+        parser,
+        n_files=args.n_files,
+        duration_sec=args.duration,
+        timeout_s=args.timeout,
+    )
 
-    # Use venv Python if this script is invoked from system Python.
-    python_exe = sys.executable
+    python_exe = _resolve_python_exe()
 
     stats = run_measurement(
         n_files=args.n_files,
         duration_sec=args.duration,
         model_dir=args.model_dir,
         python_exe=python_exe,
+        timeout_s=args.timeout,
     )
 
     # Determine report path relative to project root (two levels up from scripts/).
