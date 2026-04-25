@@ -117,17 +117,25 @@ export default function Summary() {
 
   const isFailed = documentQ.data?.status === 'transcription_failed'
 
-  const transcriptQ = useQuery({
-    queryKey: qk.transcript(id),
-    queryFn: () => api.getTranscript(id),
-    enabled: !!id,
-    retry: false,
-  })
-
   const summaryQ = useQuery({
     queryKey: qk.summary(id),
     queryFn: () => api.getSummary(id),
     enabled: !!id,
+    retry: false,
+  })
+
+  const shouldFetchTranscript =
+    !!id &&
+    (
+      activeTab === 'transcript' ||
+      summaryQ.isError ||
+      (summaryQ.isSuccess && !summaryQ.data?.content)
+    )
+
+  const transcriptQ = useQuery({
+    queryKey: qk.transcript(id),
+    queryFn: () => api.getTranscript(id),
+    enabled: shouldFetchTranscript,
     retry: false,
   })
 
@@ -212,13 +220,17 @@ export default function Summary() {
   }
 
   const onCopyPrompt = async () => {
-    const transcript = transcriptQ.data?.content || ''
-    // If the server has supplied an authoritative prompt via prompt_ready, use it
-    // even when the transcript query is still loading or empty.
-    if (!transcript && !serverPromptRef.current) {
-      toast({ description: '전사를 불러오는 중입니다', variant: 'destructive' })
+    if (serverPromptRef.current) {
+      try {
+        await navigator.clipboard.writeText(serverPromptRef.current)
+        toast({ description: '복사되었습니다' })
+      } catch {
+        toast({ description: '클립보드 접근 권한이 필요합니다', variant: 'destructive' })
+      }
       return
     }
+
+    const transcript = transcriptQ.data?.content || ''
     let text
     try {
       const result = await api.getPrompt(id, selectedPromptId)
@@ -227,6 +239,10 @@ export default function Summary() {
       text = null
     }
     if (!text) {
+      if (!transcript) {
+        toast({ description: '전사를 불러오는 중입니다', variant: 'destructive' })
+        return
+      }
       text = serverPromptRef.current || `${PROMPT_PREFIX}\n\n---\n전사:\n${transcript}`
     }
     try {

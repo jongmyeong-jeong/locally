@@ -64,6 +64,20 @@ class TestDuplicateSeq:
             recordings.append_chunk(conn, sid, b"\x00" * 10, 0)
         assert exc.value.seq == 0
 
+    def test_duplicate_seq_does_not_append_bytes_twice(self, conn):
+        sess = recordings.start_session(title="demo")
+        sid = sess["id"]
+        first = b"A" * 10
+        second = b"B" * 10
+
+        recordings.append_chunk(conn, sid, first, 0)
+        assert recordings._session_tmp_path(sid).read_bytes() == first
+
+        with pytest.raises(recordings.ChunkSeqConflict):
+            recordings.append_chunk(conn, sid, second, 0)
+
+        assert recordings._session_tmp_path(sid).read_bytes() == first
+
 
 class TestGapAtFinalize:
     def test_missing_seq_between_produces_gap_error(self, conn):
@@ -91,6 +105,28 @@ class TestShortRecording:
         with pytest.raises(recordings.RecordingTooShortError) as exc:
             recordings.finalize(conn, sid, duration_sec=0.5)
         assert exc.value.min_sec == 1
+
+    def test_close_session_clears_failed_finalize_state(self, conn):
+        sess = recordings.start_session()
+        sid = sess["id"]
+        recordings.append_chunk(conn, sid, b"\x00" * 10, 0)
+
+        with pytest.raises(recordings.RecordingTooShortError):
+            recordings.finalize(conn, sid, duration_sec=0.5)
+
+        assert recordings.get_active_session_count() == 1
+        recordings.close_session(sid)
+        assert recordings.get_session(sid) is None
+        assert recordings.get_active_session_count() == 0
+
+
+class TestTryStartSession:
+    def test_returns_none_when_another_session_is_active(self):
+        first = recordings.try_start_session(title="one")
+        assert first is not None
+
+        second = recordings.try_start_session(title="two")
+        assert second is None
 
 
 class TestSeq0CreatesDocument:

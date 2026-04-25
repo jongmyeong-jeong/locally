@@ -235,6 +235,8 @@ const listJobs = () => request('/api/jobs')
 
 // Plan §4.2 Prompt presets (bu8)
 const listPrompts = () => request('/api/prompts')
+const getPromptPreset = (id) =>
+  request(`/api/prompts/${encodeURIComponent(id)}`)
 
 const createPrompt = (body) =>
   request('/api/prompts', {
@@ -320,6 +322,7 @@ export const api = {
   startModelDownload,
   listJobs,
   listPrompts,
+  getPromptPreset,
   createPrompt,
   updatePrompt,
   deletePrompt,

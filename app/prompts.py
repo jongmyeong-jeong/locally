@@ -73,8 +73,12 @@ def load(path: Path | None = None) -> list[dict]:
             continue
         if "id" not in item or "name" not in item or "template" not in item:
             continue
+        try:
+            prompt_id = int(item["id"])
+        except (TypeError, ValueError):
+            continue
         cleaned.append({
-            "id": int(item["id"]),
+            "id": prompt_id,
             "name": str(item["name"]),
             "template": str(item["template"]),
         })

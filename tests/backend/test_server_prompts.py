@@ -26,6 +26,18 @@ class TestGetPrompts:
             r = c.get("/api/prompts")
             assert [p["id"] for p in r.json()] == [2, 1]
 
+    def test_get_single_prompt(self, tmp_home):
+        from app import prompts as prompts_mod
+
+        prompts_mod.save([
+            {"id": 1, "name": "A", "template": "T1"},
+            {"id": 2, "name": "B", "template": "T2"},
+        ])
+        with TestClient(create_app()) as c:
+            r = c.get("/api/prompts/2")
+            assert r.status_code == 200
+            assert r.json() == {"id": 2, "name": "B", "template": "T2"}
+
 
 class TestCreatePrompt:
     def test_creates_with_incremented_id(self, tmp_home):
@@ -109,6 +121,16 @@ class TestReorderPrompts:
             assert r.status_code == 200
             ids = [p["id"] for p in c.get("/api/prompts").json()]
             assert ids == [2, 1]
+
+    def test_preserves_omitted_prompts_at_end(self, tmp_home):
+        with TestClient(create_app()) as c:
+            c.get("/api/prompts")  # id=1
+            c.post("/api/prompts", json={"name": "B", "template": ""})  # id=2
+            c.post("/api/prompts", json={"name": "C", "template": ""})  # id=3
+            r = c.put("/api/prompts/order", json={"order": [3, 1]})
+            assert r.status_code == 200
+            ids = [p["id"] for p in c.get("/api/prompts").json()]
+            assert ids == [3, 1, 2]
 
 
 class TestA3PromptsJsonDeletion:

@@ -40,6 +40,16 @@ class TestLoad:
         p.write_text(json.dumps(items, ensure_ascii=False), encoding="utf-8")
         assert prompts_mod.load(p) == items
 
+    def test_skips_items_with_invalid_id_type(self, tmp_path):
+        p = tmp_path / "prompts.json"
+        p.write_text(json.dumps([
+            {"id": "abc", "name": "bad", "template": "T"},
+            {"id": 2, "name": "good", "template": "OK"},
+        ]), encoding="utf-8")
+        assert prompts_mod.load(p) == [
+            {"id": 2, "name": "good", "template": "OK"},
+        ]
+
 
 class TestSave:
     def test_atomic_write_roundtrip(self, tmp_path):

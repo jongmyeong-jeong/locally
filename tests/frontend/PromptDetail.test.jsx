@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const { apiMock } = vi.hoisted(() => ({
   apiMock: {
-    listPrompts: vi.fn(),
+    getPromptPreset: vi.fn(),
     updatePrompt: vi.fn(),
     deletePrompt: vi.fn(),
   },
@@ -19,7 +19,7 @@ vi.mock('@/hooks/use-toast', () => ({
 import PromptDetail from '@/pages/PromptDetail'
 
 function renderWith(presets) {
-  apiMock.listPrompts.mockResolvedValue(presets)
+  apiMock.getPromptPreset.mockResolvedValue(presets[0])
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -48,6 +48,7 @@ describe('PromptDetail', () => {
       expect(screen.getByDisplayValue('My')).toBeInTheDocument()
     })
     expect(screen.getByDisplayValue('hello {transcript}')).toBeInTheDocument()
+    expect(apiMock.getPromptPreset).toHaveBeenCalledWith(1)
   })
 
   it('calls updatePrompt on save with edited values', async () => {

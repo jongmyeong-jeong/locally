@@ -106,6 +106,7 @@ describe('Summary - copy button', () => {
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith(copyText)
     })
+    expect(api.getPrompt).not.toHaveBeenCalled()
   })
 })
 
@@ -181,6 +182,23 @@ describe('Summary - state machine', () => {
 
     expect(screen.queryByRole('button', { name: 'AI로 요약' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '요약 프롬프트 복사' })).not.toBeInTheDocument()
+  })
+
+  it('defers transcript fetch until the 원본 tab is opened when summary already exists', async () => {
+    const user = userEvent.setup()
+    renderSummaryWithExistingSummary()
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: '요약' })).toHaveAttribute('data-state', 'active')
+    })
+
+    expect(api.getTranscript).not.toHaveBeenCalled()
+
+    await user.click(screen.getByRole('tab', { name: '원본' }))
+
+    await waitFor(() => {
+      expect(api.getTranscript).toHaveBeenCalledTimes(1)
+    })
   })
 
   it('error state: shows error message and both buttons', async () => {

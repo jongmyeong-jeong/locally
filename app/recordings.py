@@ -23,6 +23,7 @@ import shutil
 import threading
 import time
 import uuid
+from io import BytesIO
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -91,9 +92,38 @@ def start_session(title: str | None = None) -> dict:
     }
 
 
+def try_start_session(title: str | None = None) -> dict | None:
+    """Create a new session only when no other session is active."""
+    session_id = str(uuid.uuid4())
+    with _LOCK:
+        if _SESSIONS:
+            return None
+        _SESSIONS[session_id] = RecordingSession(id=session_id, title=title)
+    try:
+        _session_tmp_path(session_id).write_bytes(b"")
+    except Exception:
+        with _LOCK:
+            _SESSIONS.pop(session_id, None)
+        raise
+    return {
+        "id": session_id,
+        "uploadUrl": f"/api/recordings/{session_id}/chunk",
+    }
+
+
 def get_session(session_id: str) -> RecordingSession | None:
     with _LOCK:
         return _SESSIONS.get(session_id)
+
+
+def close_session(session_id: str) -> None:
+    """Drop in-memory session state and best-effort remove the temp upload file."""
+    with _LOCK:
+        _SESSIONS.pop(session_id, None)
+    try:
+        _session_tmp_path(session_id).unlink()
+    except FileNotFoundError:
+        pass
 
 
 def append_chunk(
@@ -108,15 +138,7 @@ def append_chunk(
     session shows up in GET /api/documents for recovery.
     Returns {documentId, bytes_written}.
     """
-    tmp_path = _session_tmp_path(session_id)
-    with tmp_path.open("ab") as handle:
-        handle.write(chunk_bytes)
-    return _register_appended_chunk(
-        conn,
-        session_id,
-        seq,
-        bytes_written=len(chunk_bytes),
-    )
+    return append_chunk_stream(conn, session_id, BytesIO(chunk_bytes), seq)
 
 
 def append_chunk_stream(
@@ -132,47 +154,38 @@ def append_chunk_stream(
     Keeps the upload hot path on a streaming write path so large chunks do not
     require an additional in-memory bytes copy at the HTTP layer.
     """
+    session_title, document_id, needs_document = _reserve_chunk(session_id, seq)
     tmp_path = _session_tmp_path(session_id)
     bytes_written = 0
-    with tmp_path.open("ab") as handle:
-        while True:
-            part = stream.read(chunk_size)
-            if not part:
-                break
-            handle.write(part)
-            bytes_written += len(part)
-    return _register_appended_chunk(
-        conn,
-        session_id,
-        seq,
-        bytes_written=bytes_written,
-    )
-
-
-def _register_appended_chunk(
-    conn: sqlite3.Connection | None,
-    session_id: str,
-    seq: int,
-    *,
-    bytes_written: int,
-) -> dict:
-    session_title, document_id, needs_document = _reserve_chunk(session_id, seq)
-    if needs_document:
-        if conn is None:
-            raise RuntimeError("append_chunk requires conn when creating a document")
-        basename = audio_basename(session_title, datetime.now())
-        audio_path = audio_dir() / f"{basename}.webm"
-        doc = create_document(
-            conn,
-            title=session_title,
-            audio_path=str(audio_path),
-            status="recording",
-        )
-        document_id = _attach_document_id(session_id, doc["id"])
-    return {"documentId": document_id, "bytes_written": bytes_written}
+    try:
+        with tmp_path.open("ab") as handle:
+            while True:
+                part = stream.read(chunk_size)
+                if not part:
+                    break
+                handle.write(part)
+                bytes_written += len(part)
+        if needs_document:
+            if conn is None:
+                raise RuntimeError("append_chunk requires conn when creating a document")
+            basename = audio_basename(session_title, datetime.now())
+            audio_path = audio_dir() / f"{basename}.webm"
+            doc = create_document(
+                conn,
+                title=session_title,
+                audio_path=str(audio_path),
+                status="recording",
+            )
+            document_id = _attach_document_id(session_id, doc["id"])
+        return {"documentId": document_id, "bytes_written": bytes_written}
+    except Exception:
+        _rollback_reserved_chunk(session_id, seq)
+        raise
 
 
 def _reserve_chunk(session_id: str, seq: int) -> tuple[str | None, str | None, bool]:
+    if seq < 0:
+        raise ValueError("seq must be >= 0")
     with _LOCK:
         session = _SESSIONS.get(session_id)
         if session is None:
@@ -195,9 +208,22 @@ def _attach_document_id(session_id: str, document_id: str) -> str:
         return session.document_id
 
 
+def _rollback_reserved_chunk(session_id: str, seq: int) -> None:
+    with _LOCK:
+        session = _SESSIONS.get(session_id)
+        if session is None:
+            return
+        if seq not in session.seen_seqs:
+            return
+        session.seen_seqs.remove(seq)
+        session.chunk_count = max(0, session.chunk_count - 1)
+        session.max_seq = max(session.seen_seqs, default=-1)
+
+
 def get_active_session_count() -> int:
     """Return the number of currently active recording sessions."""
-    return len(_SESSIONS)
+    with _LOCK:
+        return len(_SESSIONS)
 
 
 def finalize(
@@ -281,14 +307,4 @@ def _fetch_document(conn: sqlite3.Connection, doc_id: str) -> dict | None:
 
 
 def _find_missing_seqs(seen_seqs: set[int], max_seq: int) -> list[int]:
-    missing: list[int] = []
-    expected = 0
-    for seq in sorted(seen_seqs):
-        while expected < seq:
-            missing.append(expected)
-            expected += 1
-        expected = seq + 1
-    while expected <= max_seq:
-        missing.append(expected)
-        expected += 1
-    return missing
+    return [seq for seq in range(max_seq + 1) if seq not in seen_seqs]

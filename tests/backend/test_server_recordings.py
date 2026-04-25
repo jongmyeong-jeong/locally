@@ -130,6 +130,27 @@ class TestDuplicateSeq:
         assert body["error"] == "duplicate seq"
         assert body["seq"] == 0
 
+    def test_duplicate_seq_does_not_append_bytes_twice(self, client):
+        sid = client.post("/api/recordings", json={}).json()["id"]
+        first = b"A" * 32
+        second = b"B" * 32
+
+        r1 = _upload_chunk(client, sid, 0, first)
+        assert r1.status_code == 200
+
+        tmp_path = recordings._session_tmp_path(sid)
+        assert tmp_path.read_bytes() == first
+
+        r2 = _upload_chunk(client, sid, 0, second)
+        assert r2.status_code == 409
+        assert tmp_path.read_bytes() == first
+
+    def test_negative_seq_returns_400(self, client):
+        sid = client.post("/api/recordings", json={}).json()["id"]
+        r = _upload_chunk(client, sid, -1, b"\x00" * 32)
+        assert r.status_code == 400
+        assert r.json()["detail"] == "seq must be >= 0"
+
 
 class TestGapAtFinalize:
     def test_gap_at_finalize_returns_400_with_missing_list(self, client):
@@ -148,6 +169,9 @@ class TestGapAtFinalize:
         assert data["error"] == "missing chunks"
         assert data["missing"] == [1]
 
+        retry = client.post("/api/recordings", json={})
+        assert retry.status_code == 201
+
 
 class TestShortRecording:
     def test_finalize_under_1s_rejects(self, client):
@@ -162,6 +186,9 @@ class TestShortRecording:
         error_events = [e for e in events if e.get("event") == "error"]
         assert error_events, f"No 'error' SSE event found; events={events}"
         assert error_events[0]["data"]["error"] == "recording too short"
+
+        retry = client.post("/api/recordings", json={})
+        assert retry.status_code == 201
 
     def test_finalize_too_short_marks_document_transcription_failed(self, client):
         """AC6(A): duration < 1.0s finalize → DB status = transcription_failed."""

@@ -29,11 +29,12 @@ export default function PromptDetail() {
   const { toast } = useToast()
   const numericId = Number(id)
 
-  const promptsQ = useQuery({
-    queryKey: qk.prompts(),
-    queryFn: api.listPrompts,
+  const promptQ = useQuery({
+    queryKey: qk.prompt(numericId),
+    queryFn: () => api.getPromptPreset(numericId),
+    enabled: Number.isFinite(numericId),
   })
-  const preset = promptsQ.data?.find((p) => p.id === numericId)
+  const preset = promptQ.data
 
   const [name, setName] = useState('')
   const [template, setTemplate] = useState('')
@@ -75,11 +76,16 @@ export default function PromptDetail() {
     mutationKey: [mk.updatePrompt],
     mutationFn: ({ id: pid, name: n, template: t }) =>
       api.updatePrompt(pid, { name: n, template: t }),
-    onSuccess: (_data, variables) => {
+    onSuccess: (updated, variables) => {
       // initial 동기화 — 저장 후 isDirty=false
       setInitialName(variables.name)
       setInitialTemplate(variables.template)
-      qc.invalidateQueries({ queryKey: qk.prompts() })
+      qc.setQueryData(qk.prompt(numericId), updated)
+      qc.setQueryData(qk.prompts(), (current) =>
+        Array.isArray(current)
+          ? current.map((item) => (item.id === updated.id ? updated : item))
+          : current,
+      )
       toast({ description: '저장되었습니다' })
       navigate('/settings/prompts')
     },
@@ -95,7 +101,12 @@ export default function PromptDetail() {
     mutationKey: [mk.deletePrompt],
     mutationFn: (pid) => api.deletePrompt(pid),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: qk.prompts() })
+      qc.removeQueries({ queryKey: qk.prompt(numericId), exact: true })
+      qc.setQueryData(qk.prompts(), (current) =>
+        Array.isArray(current)
+          ? current.filter((item) => item.id !== numericId)
+          : current,
+      )
       toast({ description: '삭제되었습니다' })
       navigate('/settings/prompts')
     },
@@ -116,10 +127,23 @@ export default function PromptDetail() {
     updateMut.mutate({ id: numericId, name, template })
   }
 
-  if (promptsQ.isLoading) {
+  if (promptQ.isLoading) {
     return (
       <section className="mx-auto max-w-3xl p-6">
         <p className="text-sm text-muted-foreground">불러오는 중...</p>
+      </section>
+    )
+  }
+
+  if (promptQ.isError && promptQ.error?.status !== 404) {
+    return (
+      <section className="mx-auto max-w-3xl p-6 space-y-4">
+        <p className="text-sm text-destructive">
+          프리셋을 불러오지 못했습니다.
+        </p>
+        <Button variant="outline" asChild>
+          <Link to="/settings/prompts">← 목록</Link>
+        </Button>
       </section>
     )
   }

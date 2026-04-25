@@ -160,13 +160,38 @@ async def _write_upload_file(
     *,
     chunk_size: int = 1024 * 1024,
 ) -> None:
+    await upload.seek(0)
+    await asyncio.to_thread(
+        _copy_fileobj_to_path,
+        upload.file,
+        destination,
+        chunk_size=chunk_size,
+    )
+
+
+def _copy_fileobj_to_path(source, destination: Path, *, chunk_size: int = 1024 * 1024) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    written = 0
     with destination.open("wb") as output:
         while True:
-            chunk = await upload.read(chunk_size)
+            chunk = source.read(chunk_size)
             if not chunk:
-                return
+                return written
             output.write(chunk)
+            written += len(chunk)
+
+
+def _append_recording_chunk_sync(
+    session_id: str,
+    stream,
+    seq: int,
+    *,
+    needs_document: bool,
+) -> dict:
+    if needs_document:
+        with db_mod.open_db() as conn:
+            return recordings_mod.append_chunk_stream(conn, session_id, stream, seq)
+    return recordings_mod.append_chunk_stream(None, session_id, stream, seq)
 
 
 def invalidate_system_info_cache() -> None:
@@ -946,6 +971,15 @@ def create_app() -> FastAPI:
         prompts_mod.ensure_seed()
         return prompts_mod.load()
 
+    @app.get("/api/prompts/{prompt_id}")
+    def get_prompt(prompt_id: int) -> dict:
+        prompts_mod.ensure_seed()
+        presets = prompts_mod.load()
+        preset = next((p for p in presets if p["id"] == prompt_id), None)
+        if preset is None:
+            raise HTTPException(status_code=404, detail="prompt not found")
+        return preset
+
     @app.post("/api/prompts", status_code=201)
     def create_prompt(body: PromptCreateJSON) -> dict:
         presets = prompts_mod.load()
@@ -963,10 +997,12 @@ def create_app() -> FastAPI:
     def reorder_prompts(body: PromptReorderJSON) -> dict:
         presets = prompts_mod.load()
         id_to_preset = {p["id"]: p for p in presets}
+        requested_ids = set(body.order)
         # F6: order 배열에서 파일에 없는 id는 무시 (실용적).
         reordered = [
             id_to_preset[i] for i in body.order if i in id_to_preset
         ]
+        reordered.extend(p for p in presets if p["id"] not in requested_ids)
         prompts_mod.save(reordered)
         return {"ok": True}
 
@@ -1007,17 +1043,15 @@ def create_app() -> FastAPI:
                 content={"error": "model_not_installed"},
             )
 
-        # 2. Concurrent-recording guard.
-        if _active_recording_exists():
+        # 2. Concurrent-recording guard + session creation are atomic.
+        session = recordings_mod.try_start_session(
+            title=(body.title if body is not None else None)
+        )
+        if session is None:
             return JSONResponse(
                 status_code=409,
                 content={"error": "concurrent_recording"},
             )
-
-        # 3. Create session.
-        session = recordings_mod.start_session(
-            title=(body.title if body is not None else None)
-        )
         session_id = session["id"]
 
         # 4. Determine ready model_dir.
@@ -1053,6 +1087,8 @@ def create_app() -> FastAPI:
         chunk: UploadFile = File(...),
         seq: int = Form(...),
     ) -> dict:
+        if seq < 0:
+            raise HTTPException(status_code=400, detail="seq must be >= 0")
         await chunk.seek(0)
         session = recordings_mod.get_session(session_id)
         if session is None:
@@ -1063,86 +1099,89 @@ def create_app() -> FastAPI:
         # (i.e. session was created via POST /api/recordings, not directly in tests).
         detector = _VAD_DETECTORS.get(session_id)
         chunk_temp_path: Path | None = None
+        keep_chunk_temp = False
 
         if detector is not None:
             import tempfile
-            chunk_bytes = await chunk.read()
             chunk_temp_path = (
                 Path(tempfile.gettempdir()) / f"{session_id}_chunk_{seq}.webm"
             )
-            chunk_temp_path.write_bytes(chunk_bytes)
-            # Rewind so append_chunk_stream can stream from the same bytes.
-            import io as _io
-            stream_source = _io.BytesIO(chunk_bytes)
-        else:
-            stream_source = chunk.file  # original streaming path (legacy / test)
+            await asyncio.to_thread(
+                _copy_fileobj_to_path,
+                chunk.file,
+                chunk_temp_path,
+            )
+            await chunk.seek(0)
 
         try:
-            if session.document_id is None:
-                with db_mod.open_db() as conn:
-                    result = recordings_mod.append_chunk_stream(
-                        conn, session_id, stream_source, int(seq)
-                    )
-            else:
-                result = recordings_mod.append_chunk_stream(
-                    None, session_id, stream_source, int(seq)
-                )
-        except recordings_mod.ChunkSeqConflict as exc:
-            return JSONResponse(  # type: ignore[return-value]
-                status_code=status.HTTP_409_CONFLICT,
-                content={"error": "duplicate seq", "seq": exc.seq},
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="recording session not found")
-
-        # -- VAD feed + queue push (only when live state exists). --
-        if detector is not None and chunk_temp_path is not None:
-            document_id = result.get("documentId")
-            # Decode per-chunk temp file to PCM for VAD.
             try:
-                pcm = await asyncio.to_thread(
-                    audio_io.load_pcm_16k_mono, str(chunk_temp_path)
+                result = await asyncio.to_thread(
+                    _append_recording_chunk_sync,
+                    session_id,
+                    chunk.file,
+                    int(seq),
+                    needs_document=session.document_id is None,
                 )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "vad_decode_error",
-                    {"session_id": session_id, "seq": seq, "error": str(exc)},
+            except recordings_mod.ChunkSeqConflict as exc:
+                return JSONResponse(  # type: ignore[return-value]
+                    status_code=status.HTTP_409_CONFLICT,
+                    content={"error": "duplicate seq", "seq": exc.seq},
                 )
-                pcm = None
+            except KeyError:
+                raise HTTPException(status_code=404, detail="recording session not found")
 
-            if pcm is not None:
-                lock = _VAD_LOCKS.get(session_id)
-                if lock is None:
-                    lock = asyncio.Lock()
-                    _VAD_LOCKS[session_id] = lock
-                async with lock:
-                    boundaries = detector.feed(pcm)
+            # -- VAD feed + queue push (only when live state exists). --
+            if detector is not None and chunk_temp_path is not None:
+                document_id = result.get("documentId")
+                # Decode per-chunk temp file to PCM for VAD.
+                try:
+                    pcm = await asyncio.to_thread(
+                        audio_io.load_pcm_16k_mono, str(chunk_temp_path)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "vad_decode_error",
+                        {"session_id": session_id, "seq": seq, "error": str(exc)},
+                    )
+                    pcm = None
 
-                if boundaries and document_id:
-                    sq = await transcribe_queue.get_session_queue(session_id)
-                    with db_mod.open_db() as conn:
-                        for start_ms, end_ms in boundaries:
-                            chunk_seq = _CHUNK_SEQ.get(session_id, 0)
-                            chunk_id = recording_chunks.insert_chunk(
-                                conn, document_id, chunk_seq, start_ms, end_ms
-                            )
-                            _CHUNK_SEQ[session_id] = chunk_seq + 1
-                            # TODO(lnv.7): per-chunk temp file is approximate — for
-                            # boundaries spanning multiple browser chunks, the worker
-                            # may transcribe only this chunk's audio. The finalize-path
-                            # re-extraction (Step 6c failed-range handling) is the safety net.
-                            job = transcribe_queue.ChunkJob(
-                                chunk_id=chunk_id,
-                                document_id=document_id,
-                                seq=chunk_seq,
-                                start_ms=start_ms,
-                                end_ms=end_ms,
-                                audio_path=str(chunk_temp_path),
-                            )
-                            if sq is not None:
-                                await sq.push(job)
+                if pcm is not None:
+                    lock = _VAD_LOCKS.get(session_id)
+                    if lock is None:
+                        lock = asyncio.Lock()
+                        _VAD_LOCKS[session_id] = lock
+                    async with lock:
+                        boundaries = detector.feed(pcm)
 
-        return result
+                    if boundaries and document_id:
+                        sq = await transcribe_queue.get_session_queue(session_id)
+                        with db_mod.open_db() as conn:
+                            for start_ms, end_ms in boundaries:
+                                chunk_seq = _CHUNK_SEQ.get(session_id, 0)
+                                chunk_id = recording_chunks.insert_chunk(
+                                    conn, document_id, chunk_seq, start_ms, end_ms
+                                )
+                                _CHUNK_SEQ[session_id] = chunk_seq + 1
+                                # TODO(lnv.7): per-chunk temp file is approximate — for
+                                # boundaries spanning multiple browser chunks, the worker
+                                # may transcribe only this chunk's audio. The finalize-path
+                                # re-extraction (Step 6c failed-range handling) is the safety net.
+                                job = transcribe_queue.ChunkJob(
+                                    chunk_id=chunk_id,
+                                    document_id=document_id,
+                                    seq=chunk_seq,
+                                    start_ms=start_ms,
+                                    end_ms=end_ms,
+                                    audio_path=str(chunk_temp_path),
+                                )
+                                if sq is not None:
+                                    await sq.push(job)
+                                    keep_chunk_temp = True
+
+            return result
+        finally:
+            if chunk_temp_path is not None and not keep_chunk_temp:
+                chunk_temp_path.unlink(missing_ok=True)
 
     @app.post("/api/recordings/{session_id}/finalize")
     async def finalize_recording(
@@ -1403,6 +1442,7 @@ def create_app() -> FastAPI:
                 # 7. Remove session queue and clean up live state regardless of outcome.
                 await transcribe_queue.remove_session_queue(session_id)
                 _cleanup_session_live_state(session_id)
+                recordings_mod.close_session(session_id)
                 await queue.put(None)
 
         return _sse_stream(producer)
