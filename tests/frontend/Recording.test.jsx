@@ -182,6 +182,26 @@ describe('Recording', () => {
     expect(ev.defaultPrevented).toBe(true)
   })
 
+  it('warns before unload while finalizing (status=finalizing)', async () => {
+    const router = createMemoryRouter([{ path: '/', element: <Recording /> }], {
+      initialEntries: ['/'],
+    })
+    render(<RouterProvider router={router} />)
+
+    // Force the store into finalizing state so statusRef.current === 'finalizing'
+    useAppStore.setState({ recording: { sessionId: 'session-1', startedAt: null, elapsedSec: 0, status: 'finalizing', error: null } })
+
+    // Wait for the component to reflect the new status
+    await waitFor(() => {
+      expect(useAppStore.getState().recording.status).toBe('finalizing')
+    })
+
+    const event = new Event('beforeunload', { cancelable: true })
+    const preventDefaultSpy = vi.spyOn(event, 'preventDefault')
+    window.dispatchEvent(event)
+    expect(preventDefaultSpy).toHaveBeenCalled()
+  })
+
   it('prevents duplicate finalize requests on repeated stop clicks', async () => {
     const router = createMemoryRouter([{ path: '/', element: <Recording /> }], {
       initialEntries: ['/'],

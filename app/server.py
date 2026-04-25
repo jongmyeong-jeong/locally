@@ -1192,7 +1192,9 @@ def create_app() -> FastAPI:
 
     @app.post("/api/recordings/{session_id}/finalize")
     async def finalize_recording(
-        session_id: str, body: RecordingFinalizeJSON | None = None
+        session_id: str,
+        request: Request,
+        body: RecordingFinalizeJSON | None = None,
     ) -> StreamingResponse:
         title = body.title if body is not None else None
         duration = body.durationSec if body is not None else None
@@ -1203,6 +1205,22 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="recording session not found")
 
         async def producer(queue: asyncio.Queue[bytes | None]) -> None:
+            # Intentionally does NOT set cancel_event — finalize work must
+            # complete regardless of client connection state. Contrast with
+            # _disconnect_watcher in summarize path (line 751) which cancels.
+            note_id_ref: list[str | None] = [None]
+
+            async def _disconnect_logger() -> None:
+                while True:
+                    if await request.is_disconnected():
+                        logger.info(
+                            "finalize_client_disconnected",
+                            {"session_id": session_id, "note_id": note_id_ref[0]},
+                        )
+                        return
+                    await asyncio.sleep(1.0)
+
+            disconnect_task = asyncio.create_task(_disconnect_logger())
             try:
                 # 1. Finalize session — move webm to audio_dir, set status='finalizing'.
                 try:
@@ -1258,6 +1276,7 @@ def create_app() -> FastAPI:
                     return
 
                 note_id: str = result["noteId"]
+                note_id_ref[0] = note_id
                 session_audio_path: str = result["audioPath"]
 
                 # Determine model_dir (same logic as create_recording).
@@ -1451,6 +1470,11 @@ def create_app() -> FastAPI:
                 _cleanup_session_live_state(session_id)
                 recordings_mod.close_session(session_id)
                 await queue.put(None)
+                disconnect_task.cancel()
+                try:
+                    await disconnect_task
+                except asyncio.CancelledError:
+                    pass
 
         return _sse_stream(producer)
 

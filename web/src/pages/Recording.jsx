@@ -318,13 +318,16 @@ export default function Recording() {
   // confirm prompt so the user has a chance to cancel navigation.
   useEffect(() => {
     const handler = (ev) => {
-      if (statusRef.current !== 'recording') return
-      const mr = mediaRecorderRef.current
-      if (mr && mr.state === 'recording') {
-        try {
-          mr.requestData()
-        } catch {
-          // ignore
+      const status = statusRef.current
+      if (status !== 'recording' && status !== 'finalizing') return
+      if (status === 'recording') {
+        const mr = mediaRecorderRef.current
+        if (mr && mr.state === 'recording') {
+          try {
+            mr.requestData()
+          } catch {
+            // ignore
+          }
         }
       }
       ev.preventDefault()
