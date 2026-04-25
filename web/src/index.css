@@ -22,6 +22,87 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 222.2 84% 4.9%;
     --radius: 0.5rem;
+
+    /* === Locally Design System tokens (DESIGN.md) === */
+    /* Color — Primary */
+    --color-text-primary:    #171717;
+    --color-action-primary:  #171717;
+    --color-on-primary:      #ffffff;
+    /* Surface */
+    --color-bg-page:         #f8f9fa;
+    --color-bg-card:         #ffffff;
+    --color-bg-subpanel:     #fafafa;
+    /* Text Hierarchy */
+    --color-text-secondary:  #4d4d4d;
+    --color-text-tertiary:   #666666;
+    --color-text-disabled:   #808080;
+    /* Border */
+    --color-border-subtle:   rgba(0, 0, 0, 0.08);
+    --color-border-strong:   rgba(0, 0, 0, 0.12);
+    /* Interactive states */
+    --color-bg-hover:        rgba(0, 0, 0, 0.04);
+    --color-bg-selected:     #f4f4f5;
+    --color-backdrop:        rgba(0, 0, 0, 0.5);
+    /* Blue (link & focus only) */
+    --color-blue:            #0072f5;
+    --color-link:            #0072f5;
+    --color-focus-ring:      rgba(0, 114, 245, 0.5);
+    /* Semantic */
+    --color-success:         #27a644;
+    --color-warning:         #d97706;
+    --color-error:           #dc2626;
+    /* Pill bg/text pairs (DESIGN.md §4 Pill) */
+    --color-pill-neutral-bg:  #f4f4f5;
+    --color-pill-neutral-text:#4d4d4d;
+    --color-pill-info-bg:     #ebf5ff;
+    --color-pill-info-text:   #0068d6;
+    --color-pill-success-bg:  #f0fdf4;
+    --color-pill-success-text:#27a644;
+    --color-pill-warning-bg:  #fff7ed;
+    --color-pill-warning-text:#d97706;
+    --color-pill-error-bg:    #fef2f2;
+    --color-pill-error-text:  #dc2626;
+
+    /* Typography */
+    --font-sans: 'Pretendard Variable', 'Pretendard', -apple-system, BlinkMacSystemFont,
+                 'Apple SD Gothic Neo', 'Segoe UI', sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Monaco,
+                 'Liberation Mono', monospace;
+    --font-weight-regular:   400;
+    --font-weight-medium:    500;
+    --font-weight-semibold:  600;
+    --font-weight-bold:      700;
+
+    /* Spacing (4px base, 8-multiple 우선) */
+    --space-0:   0;
+    --space-1:   4px;
+    --space-2:   8px;
+    --space-3:   12px;
+    --space-4:   16px;
+    --space-5:   20px;
+    --space-6:   24px;
+    --space-8:   32px;
+    --space-10:  40px;
+    --space-12:  48px;
+    --space-16:  64px;
+    --space-20:  80px;
+
+    /* Radius */
+    --radius-input:    4px;
+    --radius-control:  6px;
+    --radius-card:     8px;
+    --radius-pill:     9999px;
+
+    /* Z-index */
+    --z-base:     0;
+    --z-sticky:   10;
+    --z-dropdown: 30;
+    --z-modal:    50;
+    --z-toast:    70;
+    --z-tooltip:  90;
+
+    /* Reading column */
+    --reading-max-width: 720px;
   }
 
   .dark {
@@ -47,11 +128,13 @@
 
 @layer base {
   * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
     @apply border-border;
   }
   body {
     @apply bg-background text-foreground;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Pretendard',
-      'Noto Sans KR', system-ui, sans-serif;
+    font-family: var(--font-sans);
   }
 }
