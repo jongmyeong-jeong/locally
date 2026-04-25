@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
@@ -8,6 +8,7 @@ import api from '@/api/client'
 import { qk } from '@/lib/queryKeys'
 import { useToast } from '@/hooks/use-toast'
 import { useSettings } from '@/hooks/useSettings'
+import { useFinalizePoller } from '@/hooks/useSSE'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
@@ -116,6 +117,18 @@ export default function Summary() {
   })
 
   const isFailed = documentQ.data?.status === 'transcription_failed'
+  const isServerFinalizing = documentQ.data?.status === 'finalizing'
+
+  // 폴링: 서버에서 finalizing 상태인 문서는 transcribed/transcription_failed가 될 때까지 폴링
+  const fetchDocumentForPoll = useCallback(() => api.getDocument(id), [id])
+  useFinalizePoller({
+    enabled: isServerFinalizing,
+    fetchDocument: fetchDocumentForPoll,
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: qk.document(id) })
+      qc.invalidateQueries({ queryKey: qk.documents() })
+    },
+  })
 
   const summaryQ = useQuery({
     queryKey: qk.summary(id),
@@ -262,7 +275,13 @@ export default function Summary() {
         </Button>
       </div>
 
-      {isFailed ? (
+      {isServerFinalizing ? (
+        <Card>
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            <p>녹음을 처리하고 있어요. 잠시 기다려 주세요...</p>
+          </CardContent>
+        </Card>
+      ) : isFailed ? (
         <FailedTranscriptionBlock id={id} /> // AC8
       ) : (
         <Tabs value={activeTab ?? 'transcript'} onValueChange={setActiveTab}>
