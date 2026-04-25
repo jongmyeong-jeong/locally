@@ -42,16 +42,20 @@ from pydantic import BaseModel
 
 from app import logger
 from app import ai_detect
+from app import audio_io
 from app import db as db_mod
 from app import glossary as glossary_mod
 from app import models_catalog
 from app import paths
 from app import prompts as prompts_mod
+from app import recording_chunks
 from app import recordings as recordings_mod
 from app import server_jobs
 from app import summarize as summarize_mod
 from app import transcribe as transcribe_mod
 from app import transcript_format as transcript_format_mod
+from app import transcribe_queue
+from app import vad_realtime
 
 # ---------------------------------------------------------------------------
 # File upload whitelist (plan §5 AC-5 "drag-drop whitelist").
@@ -73,6 +77,48 @@ _SYSTEM_INFO_CACHE: dict[str, float | dict | None] = {
     "value": None,
 }
 _SYSTEM_INFO_LOCK = threading.Lock()
+
+# ---------------------------------------------------------------------------
+# Per-session live-recording state (Step 6a/6b/6c)
+# ---------------------------------------------------------------------------
+# VAD detector instance, per session_id.
+_VAD_DETECTORS: dict[str, vad_realtime.ChunkBoundaryDetector] = {}
+# asyncio.Lock per session to serialize concurrent chunk VAD calls.
+_VAD_LOCKS: dict[str, asyncio.Lock] = {}
+# Boundary-chunk seq counter per session (for recording_chunks.insert_chunk).
+_CHUNK_SEQ: dict[str, int] = {}
+
+
+def _any_model_ready() -> bool:
+    """Return True when at least one model is downloaded and ready."""
+    catalog = models_catalog.catalog_for_current_os()
+    return any(models_catalog.model_ready(e["id"]) for e in catalog)
+
+
+def _ffmpeg_extract_range(
+    session_webm: str, start_ms: int, end_ms: int, out_path: str
+) -> None:
+    """Extract [start_ms, end_ms) from session_webm into out_path via ffmpeg."""
+    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-loglevel", "error",
+        "-ss", f"{start_ms / 1000:.3f}",
+        "-to", f"{end_ms / 1000:.3f}",
+        "-i", session_webm,
+        "-c", "copy",
+        out_path,
+    ]
+    import subprocess
+    subprocess.run(cmd, check=True)
+
+
+def _cleanup_session_live_state(session_id: str) -> None:
+    """Remove VAD detector, lock, and chunk-seq counter for session_id."""
+    _VAD_DETECTORS.pop(session_id, None)
+    _VAD_LOCKS.pop(session_id, None)
+    _CHUNK_SEQ.pop(session_id, None)
 
 
 def _sse_event(name: str, payload: dict) -> bytes:
@@ -948,10 +994,51 @@ def create_app() -> FastAPI:
     # Recordings
     # ------------------------------------------------------------------
     @app.post("/api/recordings", status_code=status.HTTP_201_CREATED)
-    def create_recording(body: RecordingStartJSON | None = None) -> JSONResponse:
+    async def create_recording(body: RecordingStartJSON | None = None) -> JSONResponse:
+        # 1. Model presence check — return 503 when no model is installed.
+        if not _any_model_ready():
+            return JSONResponse(
+                status_code=503,
+                content={"error": "model_not_installed"},
+            )
+
+        # 2. Concurrent-recording guard.
+        # TODO(lnv.15): replace with recordings_mod.get_active_session_count() once exposed.
+        if len(recordings_mod._SESSIONS) > 0:
+            return JSONResponse(
+                status_code=409,
+                content={"error": "concurrent_recording"},
+            )
+
+        # 3. Create session.
         session = recordings_mod.start_session(
             title=(body.title if body is not None else None)
         )
+        session_id = session["id"]
+
+        # 4. Determine ready model_dir.
+        catalog = models_catalog.catalog_for_current_os()
+        ready = [e for e in catalog if models_catalog.model_ready(e["id"])]
+        model_dir = str(models_catalog.model_dir_for(ready[0]["id"])) if ready else None
+
+        # 5. TODO(lnv.9): load glossary and pass as glossary_prompt here.
+        #    For now pass None; Step 7 (lnv.9) will replace this.
+        glossary_prompt: str | None = None
+
+        # 6. Create per-session transcription queue and start the worker.
+        queue = await transcribe_queue.create_session_queue(
+            session_id,
+            session_id,  # document_id not yet known; will be set after seq=0 chunk
+            model_dir,
+            glossary_prompt=glossary_prompt,
+        )
+        await queue.start()
+
+        # 7. Initialise per-session live-recording state.
+        _VAD_DETECTORS[session_id] = vad_realtime.ChunkBoundaryDetector()
+        _VAD_LOCKS[session_id] = asyncio.Lock()
+        _CHUNK_SEQ[session_id] = 0
+
         return JSONResponse(
             status_code=status.HTTP_201_CREATED, content=session
         )
@@ -966,15 +1053,35 @@ def create_app() -> FastAPI:
         session = recordings_mod.get_session(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="recording session not found")
+
+        # -- Per-chunk temp file for VAD / pre-transcription (O(N) decode). --
+        # Only materialise when a live VAD detector exists for this session
+        # (i.e. session was created via POST /api/recordings, not directly in tests).
+        detector = _VAD_DETECTORS.get(session_id)
+        chunk_temp_path: Path | None = None
+
+        if detector is not None:
+            import tempfile
+            chunk_bytes = await chunk.read()
+            chunk_temp_path = (
+                Path(tempfile.gettempdir()) / f"{session_id}_chunk_{seq}.webm"
+            )
+            chunk_temp_path.write_bytes(chunk_bytes)
+            # Rewind so append_chunk_stream can stream from the same bytes.
+            import io as _io
+            stream_source = _io.BytesIO(chunk_bytes)
+        else:
+            stream_source = chunk.file  # original streaming path (legacy / test)
+
         try:
             if session.document_id is None:
                 with db_mod.open_db() as conn:
                     result = recordings_mod.append_chunk_stream(
-                        conn, session_id, chunk.file, int(seq)
+                        conn, session_id, stream_source, int(seq)
                     )
             else:
                 result = recordings_mod.append_chunk_stream(
-                    None, session_id, chunk.file, int(seq)
+                    None, session_id, stream_source, int(seq)
                 )
         except recordings_mod.ChunkSeqConflict as exc:
             return JSONResponse(  # type: ignore[return-value]
@@ -983,46 +1090,320 @@ def create_app() -> FastAPI:
             )
         except KeyError:
             raise HTTPException(status_code=404, detail="recording session not found")
+
+        # -- VAD feed + queue push (only when live state exists). --
+        if detector is not None and chunk_temp_path is not None:
+            document_id = result.get("documentId")
+            # Decode per-chunk temp file to PCM for VAD.
+            try:
+                pcm = await asyncio.to_thread(
+                    audio_io.load_pcm_16k_mono, str(chunk_temp_path)
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "vad_decode_error",
+                    {"session_id": session_id, "seq": seq, "error": str(exc)},
+                )
+                pcm = None
+
+            if pcm is not None:
+                lock = _VAD_LOCKS.get(session_id)
+                if lock is None:
+                    lock = asyncio.Lock()
+                    _VAD_LOCKS[session_id] = lock
+                async with lock:
+                    boundaries = detector.feed(pcm)
+
+                if boundaries and document_id:
+                    sq = await transcribe_queue.get_session_queue(session_id)
+                    with db_mod.open_db() as conn:
+                        for start_ms, end_ms in boundaries:
+                            chunk_seq = _CHUNK_SEQ.get(session_id, 0)
+                            chunk_id = recording_chunks.insert_chunk(
+                                conn, document_id, chunk_seq, start_ms, end_ms
+                            )
+                            _CHUNK_SEQ[session_id] = chunk_seq + 1
+                            # TODO(lnv.7): per-chunk temp file is approximate — for
+                            # boundaries spanning multiple browser chunks, the worker
+                            # may transcribe only this chunk's audio. The finalize-path
+                            # re-extraction (Step 6c failed-range handling) is the safety net.
+                            job = transcribe_queue.ChunkJob(
+                                chunk_id=chunk_id,
+                                document_id=document_id,
+                                seq=chunk_seq,
+                                start_ms=start_ms,
+                                end_ms=end_ms,
+                                audio_path=str(chunk_temp_path),
+                            )
+                            if sq is not None:
+                                await sq.push(job)
+
         return result
 
     @app.post("/api/recordings/{session_id}/finalize")
-    def finalize_recording(
+    async def finalize_recording(
         session_id: str, body: RecordingFinalizeJSON | None = None
-    ) -> JSONResponse:
+    ) -> StreamingResponse:
         title = body.title if body is not None else None
         duration = body.durationSec if body is not None else None
-        try:
-            with db_mod.open_db() as conn:
-                result = recordings_mod.finalize(
-                    conn,
-                    session_id,
-                    title=title,
-                    duration_sec=duration,
+
+        # Validate session exists before entering SSE producer.
+        session_check = recordings_mod.get_session(session_id)
+        if session_check is None:
+            raise HTTPException(status_code=404, detail="recording session not found")
+
+        async def producer(queue: asyncio.Queue[bytes | None]) -> None:
+            try:
+                # 1. Finalize session — move webm to audio_dir, set status='pending'.
+                try:
+                    with db_mod.open_db() as conn:
+                        result = recordings_mod.finalize(
+                            conn,
+                            session_id,
+                            title=title,
+                            duration_sec=duration,
+                        )
+                except recordings_mod.ChunkGapError as exc:
+                    await queue.put(
+                        _sse_event(
+                            "error",
+                            {
+                                "error": "missing chunks",
+                                "missing": exc.missing,
+                                "canRetry": False,
+                            },
+                        )
+                    )
+                    return
+                except recordings_mod.RecordingTooShortError as exc:
+                    # AC6(A): preserve h14 behavior — set transcription_failed.
+                    session_obj = recordings_mod.get_session(session_id)
+                    doc_id_short = (
+                        session_obj.document_id if session_obj is not None else None
+                    )
+                    if doc_id_short:
+                        with db_mod.open_db() as conn:
+                            db_mod.update_document(
+                                conn, doc_id_short, status="transcription_failed"
+                            )
+                    await queue.put(
+                        _sse_event(
+                            "error",
+                            {
+                                "error": "recording too short",
+                                "min_sec": exc.min_sec,
+                                "canRetry": False,
+                            },
+                        )
+                    )
+                    return
+                except KeyError:
+                    await queue.put(
+                        _sse_event(
+                            "error",
+                            {"error": "session not found", "canRetry": False},
+                        )
+                    )
+                    return
+
+                document_id: str = result["documentId"]
+                session_audio_path: str = result["audioPath"]
+
+                # Set status to 'finalizing'.
+                # TODO(lnv.10): refactor recordings.finalize to accept live=True
+                # and set 'finalizing' internally; remove this post-update then.
+                with db_mod.open_db() as conn:
+                    db_mod.update_document(conn, document_id, status="finalizing")
+
+                # Determine model_dir (same logic as create_recording).
+                catalog = models_catalog.catalog_for_current_os()
+                ready_models = [
+                    e for e in catalog if models_catalog.model_ready(e["id"])
+                ]
+                model_dir = (
+                    str(models_catalog.model_dir_for(ready_models[0]["id"]))
+                    if ready_models
+                    else None
                 )
-        except recordings_mod.ChunkGapError as exc:
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={"error": "missing chunks", "missing": exc.missing},
-            )
-        except recordings_mod.RecordingTooShortError as exc:
-            # AC6(A): 너무 짧은 녹음(<1s)은 transcription_failed로 기록 후 400 반환.
-            session = recordings_mod.get_session(session_id)
-            doc_id = session.document_id if session is not None else None
-            if doc_id:
+                # TODO(lnv.9): load glossary_prompt from glossary_mod here.
+                glossary_prompt: str | None = None
+
+                # 2. Flush VAD detector to emit any trailing audio boundary.
+                detector = _VAD_DETECTORS.get(session_id)
+                if detector is not None:
+                    lock = _VAD_LOCKS.get(session_id)
+                    tail: tuple[int, int] | None
+                    if lock is not None:
+                        async with lock:
+                            tail = detector.flush()
+                    else:
+                        tail = detector.flush()
+
+                    if tail is not None:
+                        start_ms, end_ms = tail
+                        import tempfile
+                        tail_path = (
+                            Path(tempfile.gettempdir())
+                            / f"{session_id}_tail.webm"
+                        )
+                        try:
+                            await asyncio.to_thread(
+                                _ffmpeg_extract_range,
+                                session_audio_path,
+                                start_ms,
+                                end_ms,
+                                str(tail_path),
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "finalize_tail_extract_error",
+                                {"session_id": session_id, "error": str(exc)},
+                            )
+                            tail_path = None
+
+                        if tail_path is not None:
+                            sq = await transcribe_queue.get_session_queue(session_id)
+                            with db_mod.open_db() as conn:
+                                chunk_seq = _CHUNK_SEQ.get(session_id, 0)
+                                chunk_id = recording_chunks.insert_chunk(
+                                    conn,
+                                    document_id,
+                                    chunk_seq,
+                                    start_ms,
+                                    end_ms,
+                                )
+                                _CHUNK_SEQ[session_id] = chunk_seq + 1
+                            job = transcribe_queue.ChunkJob(
+                                chunk_id=chunk_id,
+                                document_id=document_id,
+                                seq=chunk_seq,
+                                start_ms=start_ms,
+                                end_ms=end_ms,
+                                audio_path=str(tail_path),
+                            )
+                            if sq is not None:
+                                await sq.push(job)
+
+                # 3. Drain the queue — wait for all pre-transcription jobs.
+                await queue.put(
+                    _sse_event("progress", {"status": "draining", "done": 0})
+                )
+                sq = await transcribe_queue.get_session_queue(session_id)
+                if sq is not None:
+                    await sq.drain()
+                await queue.put(
+                    _sse_event("progress", {"status": "drained"})
+                )
+
+                # 4. Option H — re-transcribe failed ranges from session webm.
+                if sq is not None and sq.failed_ranges:
+                    import tempfile
+                    for fr in sorted(sq.failed_ranges, key=lambda x: x["seq"]):
+                        fr_path = (
+                            Path(tempfile.gettempdir())
+                            / f"{session_id}_retry_{fr['seq']}.webm"
+                        )
+                        try:
+                            await asyncio.to_thread(
+                                _ffmpeg_extract_range,
+                                session_audio_path,
+                                fr["start_ms"],
+                                fr["end_ms"],
+                                str(fr_path),
+                            )
+                            text, _ = await asyncio.to_thread(
+                                transcribe_mod.run,
+                                str(fr_path),
+                                model_dir=model_dir,
+                                prompt=glossary_prompt,
+                                profile="chunk",
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            logger.warning(
+                                "finalize_retry_error",
+                                {
+                                    "session_id": session_id,
+                                    "seq": fr["seq"],
+                                    "error": str(exc),
+                                },
+                            )
+                            text = ""
+                        finally:
+                            fr_path.unlink(missing_ok=True)
+
+                        if text:
+                            with db_mod.open_db() as conn:
+                                row = conn.execute(
+                                    "SELECT id FROM recording_chunks "
+                                    "WHERE document_id = ? AND start_ms = ? AND end_ms = ?",
+                                    (document_id, fr["start_ms"], fr["end_ms"]),
+                                ).fetchone()
+                                if row:
+                                    recording_chunks.update_chunk_status(
+                                        conn, row["id"], "success", text
+                                    )
+
+                # 5. Assemble transcript from all chunks.
+                with db_mod.open_db() as conn:
+                    all_done = recording_chunks.all_chunks_done(conn, document_id)
+                    chunks = recording_chunks.get_chunks(conn, document_id)
+
+                if not all_done and chunks:
+                    # Some chunks still failed; fall through with what we have.
+                    logger.warning(
+                        "finalize_chunks_not_all_done",
+                        {"session_id": session_id, "document_id": document_id},
+                    )
+
+                if chunks:
+                    transcript_text = "\n".join(
+                        c["text"] for c in chunks if c.get("text")
+                    )
+                else:
+                    # No pre-transcription chunks were queued (e.g. very short
+                    # recording that produced no VAD boundaries); leave transcript
+                    # empty — caller can trigger normal transcription.
+                    transcript_text = ""
+
+                # Write transcript file.
+                with db_mod.open_db() as conn:
+                    doc_row = db_mod.get_document(conn, document_id)
+                doc_title = doc_row["title"] if doc_row else title
+                basename = paths.audio_basename(
+                    doc_title, datetime.now(), doc_id=document_id
+                )
+                out_path = paths.transcripts_dir() / f"{basename}.md"
+                out_path.parent.mkdir(parents=True, exist_ok=True)
+                out_path.write_text(transcript_text, encoding="utf-8")
+
                 with db_mod.open_db() as conn:
                     db_mod.update_document(
-                        conn, doc_id, status="transcription_failed"
+                        conn,
+                        document_id,
+                        status="transcribed",
+                        transcript_path=str(out_path),
                     )
-            return JSONResponse(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                content={
-                    "error": "recording too short",
-                    "min_sec": exc.min_sec,
-                },
-            )
-        except KeyError:
-            raise HTTPException(status_code=404, detail="recording session not found")
-        return JSONResponse(status_code=200, content=result)
+
+                # 6. Emit complete event.
+                await queue.put(
+                    _sse_event(
+                        "complete",
+                        {
+                            "status": "completed",
+                            "documentId": document_id,
+                            "audioPath": session_audio_path,
+                            "transcriptPath": str(out_path),
+                        },
+                    )
+                )
+
+            finally:
+                # 7. Remove session queue and clean up live state regardless of outcome.
+                await transcribe_queue.remove_session_queue(session_id)
+                _cleanup_session_live_state(session_id)
+                await queue.put(None)
+
+        return _sse_stream(producer)
 
     # ------------------------------------------------------------------
     # Jobs list

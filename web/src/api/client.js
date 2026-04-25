@@ -276,12 +276,24 @@ const postRecordingChunk = (id, chunk, seq) => {
     body: fd,
   })
 }
-const finalizeRecording = (id, body = {}) =>
-  request(`/api/recordings/${encodeURIComponent(id)}/finalize`, {
+// finalizeRecording supports two calling conventions:
+//   Legacy (no handlers):  finalizeRecording(id, body) → Promise<response>
+//   SSE-aware (handlers):  finalizeRecording(id, body, handlers) → disposer fn
+// lnv.14 will swap Recording.jsx to the SSE-aware form; until then both work.
+const finalizeRecording = (id, body = {}, handlers = undefined) => {
+  if (handlers !== undefined) {
+    return postSse(
+      `/api/recordings/${encodeURIComponent(id)}/finalize`,
+      body,
+      handlers,
+    )
+  }
+  return request(`/api/recordings/${encodeURIComponent(id)}/finalize`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify(body),
   })
+}
 
 export const api = {
   request,

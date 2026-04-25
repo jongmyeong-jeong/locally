@@ -1,8 +1,9 @@
 """AC-7 tests for chunk upload / finalize / duplicate / gap / too-short."""
 from __future__ import annotations
 
-import io
 import asyncio
+import io
+import json
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,42 @@ from fastapi.testclient import TestClient
 from starlette.datastructures import Headers, UploadFile
 
 from app import recordings
+from app import server as server_mod
 from app.server import create_app
+
+
+# ---------------------------------------------------------------------------
+# SSE parsing helper
+# ---------------------------------------------------------------------------
+
+
+def _parse_sse(text: str) -> list[dict]:
+    """Parse SSE response text into a list of event dicts with 'event'/'data'."""
+    events: list[dict] = []
+    current: dict = {}
+    for raw in text.splitlines():
+        if raw.startswith(":"):
+            continue
+        if raw == "":
+            if current:
+                events.append(current)
+                current = {}
+            continue
+        if raw.startswith("event: "):
+            current["event"] = raw[len("event: "):]
+        elif raw.startswith("data: "):
+            try:
+                current["data"] = json.loads(raw[len("data: "):])
+            except json.JSONDecodeError:
+                current["data"] = raw[len("data: "):]
+    if current:
+        events.append(current)
+    return events
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
 
 
 @pytest.fixture(autouse=True)
@@ -20,8 +56,26 @@ def _reset_sessions():
     recordings._SESSIONS.clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_live_state():
+    """Clear module-level VAD/queue state between tests."""
+    server_mod._VAD_DETECTORS.clear()
+    server_mod._VAD_LOCKS.clear()
+    server_mod._CHUNK_SEQ.clear()
+    yield
+    server_mod._VAD_DETECTORS.clear()
+    server_mod._VAD_LOCKS.clear()
+    server_mod._CHUNK_SEQ.clear()
+
+
 @pytest.fixture
-def client(tmp_home):  # noqa: ARG001
+def mock_model_ready(monkeypatch):
+    """Patch _any_model_ready to return True so create_recording passes the 503 guard."""
+    monkeypatch.setattr(server_mod, "_any_model_ready", lambda: True)
+
+
+@pytest.fixture
+def client(tmp_home, mock_model_ready):  # noqa: ARG001
     app = create_app()
     with TestClient(app) as c:
         yield c
@@ -35,6 +89,11 @@ def _upload_chunk(client, session_id: str, seq: int, payload: bytes):
     )
 
 
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
 class TestChunkFinalize:
     def test_chunk_finalize_3_chunks(self, client):
         start = client.post("/api/recordings", json={"title": "demo"})
@@ -46,13 +105,16 @@ class TestChunkFinalize:
             assert r.status_code == 200, r.text
             assert r.json()["documentId"]
 
-        # Finalize with a 30s duration (>1s floor).
+        # Finalize with a 30s duration (>1s floor) — now returns SSE stream (200).
         r = client.post(
             f"/api/recordings/{sid}/finalize",
             json={"durationSec": 30.0},
         )
         assert r.status_code == 200, r.text
-        body = r.json()
+        events = _parse_sse(r.text)
+        complete_events = [e for e in events if e.get("event") == "complete"]
+        assert complete_events, f"No 'complete' SSE event found; events={events}"
+        body = complete_events[0]["data"]
         assert body["documentId"]
         assert Path(body["audioPath"]).exists()
 
@@ -74,25 +136,32 @@ class TestGapAtFinalize:
         sid = client.post("/api/recordings", json={}).json()["id"]
         _upload_chunk(client, sid, 0, b"\x00" * 32)
         _upload_chunk(client, sid, 2, b"\x00" * 32)
+        # Finalize now returns SSE 200 with an error event for gap errors.
         r = client.post(
             f"/api/recordings/{sid}/finalize", json={"durationSec": 30.0}
         )
-        assert r.status_code == 400
-        body = r.json()
-        assert body["error"] == "missing chunks"
-        assert body["missing"] == [1]
+        assert r.status_code == 200, r.text
+        events = _parse_sse(r.text)
+        error_events = [e for e in events if e.get("event") == "error"]
+        assert error_events, f"No 'error' SSE event found; events={events}"
+        data = error_events[0]["data"]
+        assert data["error"] == "missing chunks"
+        assert data["missing"] == [1]
 
 
 class TestShortRecording:
     def test_finalize_under_1s_rejects(self, client):
         sid = client.post("/api/recordings", json={}).json()["id"]
         _upload_chunk(client, sid, 0, b"\x00" * 32)
+        # Finalize now returns SSE 200 with an error event for too-short.
         r = client.post(
             f"/api/recordings/{sid}/finalize", json={"durationSec": 0.5}
         )
-        assert r.status_code == 400
-        body = r.json()
-        assert body["error"] == "recording too short"
+        assert r.status_code == 200, r.text
+        events = _parse_sse(r.text)
+        error_events = [e for e in events if e.get("event") == "error"]
+        assert error_events, f"No 'error' SSE event found; events={events}"
+        assert error_events[0]["data"]["error"] == "recording too short"
 
     def test_finalize_too_short_marks_document_transcription_failed(self, client):
         """AC6(A): duration < 1.0s finalize → DB status = transcription_failed."""
@@ -105,12 +174,15 @@ class TestShortRecording:
         # Confirm document exists with status 'recording'.
         doc_before = client.get(f"/api/documents/{doc_id}").json()
         assert doc_before["status"] == "recording"
-        # 3) Finalize with durationSec=0.5 (below the 1s floor) → 400.
+        # 3) Finalize with durationSec=0.5 — SSE 200, error event.
         r = client.post(
             f"/api/recordings/{sid}/finalize", json={"durationSec": 0.5}
         )
-        assert r.status_code == 400
-        assert r.json()["error"] == "recording too short"
+        assert r.status_code == 200, r.text
+        events = _parse_sse(r.text)
+        error_events = [e for e in events if e.get("event") == "error"]
+        assert error_events, f"No 'error' SSE event; events={events}"
+        assert error_events[0]["data"]["error"] == "recording too short"
         # 4) Document status must be 'transcription_failed'.
         doc_after = client.get(f"/api/documents/{doc_id}").json()
         assert doc_after["status"] == "transcription_failed"
@@ -139,8 +211,37 @@ class TestUnknownSession:
         assert r.status_code == 404
 
 
+class TestModelNotInstalled:
+    def test_create_recording_returns_503_when_no_model(self, tmp_home, monkeypatch):
+        """503 when _any_model_ready() is False."""
+        monkeypatch.setattr(server_mod, "_any_model_ready", lambda: False)
+        app = create_app()
+        with TestClient(app) as c:
+            r = c.post("/api/recordings", json={})
+        assert r.status_code == 503
+        assert r.json()["error"] == "model_not_installed"
+
+
+class TestConcurrentRecording:
+    def test_create_recording_returns_409_when_session_active(
+        self, tmp_home, monkeypatch
+    ):
+        """409 when another recording session is already active."""
+        monkeypatch.setattr(server_mod, "_any_model_ready", lambda: True)
+        app = create_app()
+        with TestClient(app) as c:
+            r1 = c.post("/api/recordings", json={})
+            assert r1.status_code == 201
+            r2 = c.post("/api/recordings", json={})
+            assert r2.status_code == 409
+            assert r2.json()["error"] == "concurrent_recording"
+
+
 class TestStreamingChunkAppend:
     def test_streaming_append_avoids_buffering_whole_upload(self, tmp_home):
+        """When no VAD detector is registered (session created directly, not via HTTP),
+        the chunk endpoint falls back to the original streaming path without calling
+        UploadFile.read()."""
         app = create_app()
         route = next(
             route
