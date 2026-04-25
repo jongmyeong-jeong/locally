@@ -246,6 +246,9 @@ def spawn_locally_start(tmp_path, monkeypatch):
         # the real ~/.locally during the test.
         env_full["HOME"] = str(tmp_path)
         env_full["USERPROFILE"] = str(tmp_path)  # Windows
+        # Skip update check and preflight so AC-2 lines are exactly lines 1-4.
+        env_full.setdefault("LOCALLY_SKIP_UPDATE", "1")
+        env_full.setdefault("LOCALLY_SKIP_PREFLIGHT", "1")
         cmd = [
             sys.executable,
             "-m",

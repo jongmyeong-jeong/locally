@@ -59,7 +59,7 @@ describe('App router smoke', () => {
     renderApp(['/glossary'])
     await waitFor(() => {
       expect(
-        screen.getByPlaceholderText('자주 사용하는 용어를 입력하고 Enter를 누르세요.'),
+        screen.getByPlaceholderText('용어를 입력하고 Enter를 눌러주세요.'),
       ).toBeInTheDocument()
     })
   })
