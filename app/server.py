@@ -608,8 +608,15 @@ def create_app() -> FastAPI:
                 model_dir = (
                     str(models_catalog.model_dir_for(ready[0]["id"])) if ready else None
                 )
+                glossary_terms = glossary_mod.load()
+                glossary_prompt: str | None = (
+                    ", ".join(glossary_terms) if glossary_terms else None
+                )
                 return transcribe_mod.run(
-                    audio_path, model_dir=model_dir, progress_cb=_progress_cb
+                    audio_path,
+                    model_dir=model_dir,
+                    prompt=glossary_prompt,
+                    progress_cb=_progress_cb,
                 )
 
             try:
