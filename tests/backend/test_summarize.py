@@ -9,6 +9,7 @@ import time
 import pytest
 
 from app import summarize
+from app.summarize import build_prompt
 
 
 # ── build_prompt (M10 contract-level) ────────────────────────────────────
@@ -244,3 +245,64 @@ class TestWriteOutputs:
         assert out["summary_path"] is not None
         assert (s_root / "s.summary.md").read_text(encoding="utf-8") == "# X"
         assert (t_root / "s.prompt.md").read_text(encoding="utf-8") == "P"
+
+
+# ── build_prompt custom template (new template= parameter) ──────────────
+
+
+class TestBuildPromptCustomTemplate:
+    def test_replaces_transcript_placeholder(self):
+        out = build_prompt(
+            transcript="hello",
+            glossary_terms=[],
+            title="X",
+            template="body: {transcript}",
+        )
+        assert out == "body: hello"
+
+    def test_replaces_title_placeholder(self):
+        out = build_prompt(
+            transcript="T",
+            glossary_terms=[],
+            title="foo",
+            template="# {title}",
+        )
+        assert out == "# foo"
+
+    def test_replaces_glossary_with_comma_join(self):
+        out = build_prompt(
+            transcript="T",
+            glossary_terms=["A", "B"],
+            title="X",
+            template="G: {glossary}",
+        )
+        assert out == "G: A, B"
+
+    def test_custom_path_does_not_call_inject_into_prompt(self):
+        # 사용자가 {glossary terms comma-separated} 리터럴을 그대로 두면
+        # 치환되지 않은 채 AI에 전달됨.
+        out = build_prompt(
+            transcript="T",
+            glossary_terms=["X"],
+            title="H",
+            template="{glossary terms comma-separated}",
+        )
+        assert out == "{glossary terms comma-separated}"
+
+    def test_natural_brace_tokens_preserved(self):
+        # CF-1 방어: 자연어 지시문의 중괄호 토큰이 있어도 KeyError 없음.
+        template = "## 주요 논의사항\n### {주제명}\n- {내용}\n\n{transcript}"
+        out = build_prompt(
+            transcript="T",
+            glossary_terms=[],
+            title="X",
+            template=template,
+        )
+        assert "{주제명}" in out
+        assert "{내용}" in out
+        assert "T" in out  # transcript 치환됨
+
+    def test_template_none_preserves_legacy_behavior(self):
+        out = build_prompt(transcript="T", glossary_terms=["X"], title="H")
+        assert "# H" in out
+        assert "T" in out

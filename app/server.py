@@ -46,6 +46,7 @@ from app import db as db_mod
 from app import glossary as glossary_mod
 from app import models_catalog
 from app import paths
+from app import prompts as prompts_mod
 from app import recordings as recordings_mod
 from app import server_jobs
 from app import summarize as summarize_mod
@@ -212,6 +213,21 @@ class DownloadModelJSON(BaseModel):
 
 class SummarizeJSON(BaseModel):
     ai: Literal["auto", "claude", "codex", "none"] | None = None
+    prompt_id: int | None = None  # F5: 선택된 프리셋 id
+
+
+class PromptCreateJSON(BaseModel):
+    name: str
+    template: str
+
+
+class PromptUpdateJSON(BaseModel):
+    name: str | None = None
+    template: str | None = None
+
+
+class PromptReorderJSON(BaseModel):
+    order: list[int]
 
 
 class SettingsJSON(BaseModel):
@@ -613,6 +629,18 @@ def create_app() -> FastAPI:
                 status_code=400, detail="document has no transcriptPath"
             )
 
+        # F5: prompt_id로 프리셋 선택. 없거나 유효하지 않으면 첫 항목 fallback.
+        prompts_mod.ensure_seed()  # G2 방어 — 요약 진입 시점 시드 보장
+        presets = prompts_mod.load()
+        selected_template: str | None = None
+        prompt_id = body.prompt_id if body is not None else None
+        if prompt_id is not None:
+            selected = next((p for p in presets if p["id"] == prompt_id), None)
+            if selected is not None:
+                selected_template = selected["template"]
+        if selected_template is None and presets:
+            selected_template = presets[0]["template"]
+
         transcript_text = Path(doc["transcriptPath"]).read_text(encoding="utf-8")
         title = doc["title"]
         glossary_terms = glossary_mod.load()
@@ -620,6 +648,7 @@ def create_app() -> FastAPI:
             transcript=transcript_text,
             glossary_terms=glossary_terms,
             title=title,
+            template=selected_template,
         )
 
         # Resolve AI CLI.
@@ -777,11 +806,22 @@ def create_app() -> FastAPI:
         return {"content": content}
 
     @app.get("/api/documents/{doc_id}/prompt")
-    def get_document_prompt(doc_id: str) -> dict:
+    def get_document_prompt(doc_id: str, prompt_id: int | None = None) -> dict:
+        prompts_mod.ensure_seed()  # 방어
         with db_mod.open_db() as conn:
             doc = _get_document_or_404(conn, doc_id)
         if not doc.get("transcriptPath"):
             raise HTTPException(status_code=404, detail="transcript not found")
+
+        presets = prompts_mod.load()
+        selected_template: str | None = None
+        if prompt_id is not None:
+            selected = next((p for p in presets if p["id"] == prompt_id), None)
+            if selected is not None:
+                selected_template = selected["template"]
+        if selected_template is None and presets:
+            selected_template = presets[0]["template"]
+
         transcript_text = Path(doc["transcriptPath"]).read_text(encoding="utf-8")
         title = doc["title"]
         glossary_terms = glossary_mod.load()
@@ -789,6 +829,7 @@ def create_app() -> FastAPI:
             transcript=transcript_text,
             glossary_terms=glossary_terms,
             title=title,
+            template=selected_template,
         )
         return {"prompt": prompt}
 
@@ -841,6 +882,67 @@ def create_app() -> FastAPI:
             content=b"",
             headers={"Content-Length": "0"},
         )
+
+    # ------------------------------------------------------------------
+    # Prompt presets (F1~F4, F6)
+    # ------------------------------------------------------------------
+    # NOTE: 라우트 등록 순서 중요 — `/api/prompts/order`를 `/api/prompts/{prompt_id}`
+    # 보다 먼저 등록해야 'order'가 int 파싱에 실패하지 않는다.
+
+    @app.get("/api/prompts")
+    def list_prompts() -> list[dict]:
+        # A1/A3/G2 보장 — 진입 시 시드.
+        prompts_mod.ensure_seed()
+        return prompts_mod.load()
+
+    @app.post("/api/prompts", status_code=201)
+    def create_prompt(body: PromptCreateJSON) -> dict:
+        presets = prompts_mod.load()
+        new_id = prompts_mod.next_id(presets)
+        new_preset = {
+            "id": new_id,
+            "name": body.name,
+            "template": body.template,
+        }
+        presets.append(new_preset)  # 배열 끝에 append (F2)
+        prompts_mod.save(presets)
+        return new_preset
+
+    @app.put("/api/prompts/order")
+    def reorder_prompts(body: PromptReorderJSON) -> dict:
+        presets = prompts_mod.load()
+        id_to_preset = {p["id"]: p for p in presets}
+        # F6: order 배열에서 파일에 없는 id는 무시 (실용적).
+        reordered = [
+            id_to_preset[i] for i in body.order if i in id_to_preset
+        ]
+        prompts_mod.save(reordered)
+        return {"ok": True}
+
+    @app.put("/api/prompts/{prompt_id}")
+    def update_prompt(prompt_id: int, body: PromptUpdateJSON) -> dict:
+        presets = prompts_mod.load()
+        target = next((p for p in presets if p["id"] == prompt_id), None)
+        if target is None:
+            raise HTTPException(status_code=404, detail="prompt not found")
+        if body.name is not None:
+            target["name"] = body.name
+        if body.template is not None:
+            target["template"] = body.template
+        prompts_mod.save(presets)
+        return target
+
+    @app.delete(
+        "/api/prompts/{prompt_id}",
+        status_code=status.HTTP_204_NO_CONTENT,
+    )
+    def delete_prompt(prompt_id: int) -> Response:
+        presets = prompts_mod.load()
+        new_presets = [p for p in presets if p["id"] != prompt_id]
+        if len(new_presets) == len(presets):
+            raise HTTPException(status_code=404, detail="prompt not found")
+        prompts_mod.save(new_presets)
+        return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # ------------------------------------------------------------------
     # Recordings

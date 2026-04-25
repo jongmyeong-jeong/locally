@@ -83,6 +83,10 @@ def glossary_path() -> Path:
     return workspace_root() / "glossary.json"
 
 
+def prompts_path() -> Path:
+    return workspace_root() / "prompts.json"
+
+
 def db_path() -> Path:
     return locally_home() / "db.sqlite"
 

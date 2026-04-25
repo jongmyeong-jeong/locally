@@ -9,6 +9,8 @@ export const qk = {
   transcript: (id) => ['documents', id, 'transcript'],
   summary: (id) => ['documents', id, 'summary'],
   glossary: () => ['glossary'],
+  prompts: () => ['prompts'],
+  prompt: (id) => ['prompts', id],
 }
 
 export const mk = {
@@ -20,4 +22,8 @@ export const mk = {
   startRecording: 'startRecording',
   finalizeRecording: 'finalizeRecording',
   cancelJob: 'cancelJob',
+  createPrompt: 'createPrompt',
+  updatePrompt: 'updatePrompt',
+  deletePrompt: 'deletePrompt',
+  reorderPrompts: 'reorderPrompts',
 }

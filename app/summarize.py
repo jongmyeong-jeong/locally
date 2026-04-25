@@ -57,17 +57,28 @@ def build_prompt(
     transcript: str,
     glossary_terms: list[str],
     title: str = "회의록",
+    template: str | None = None,
 ) -> str:
-    """Format the summary prompt with title, glossary, and transcript.
+    """Build the summary prompt by substituting variables.
 
-    Replaces the literal placeholders `{제목}`, the glossary placeholder,
-    and `{transcript text}`.
+    Two paths:
+    - template=None (legacy): uses SUMMARY_PROMPT_TEMPLATE with internal literals
+      ({제목}, {glossary terms comma-separated}, {transcript text}).
+    - template=str (new): user-facing variable names ({title}, {glossary},
+      {transcript}). All substitutions use str.replace() — never str.format() —
+      because templates may contain natural-language brace tokens like {내용}.
     """
-    text = SUMMARY_PROMPT_TEMPLATE
-    # Title placeholder: replace only the first occurrence on the h1 line.
-    text = text.replace("# {제목}", f"# {title}", 1)
-    text = inject_into_prompt(text, glossary_terms)
-    text = text.replace("{transcript text}", transcript)
+    if template is None:
+        text = SUMMARY_PROMPT_TEMPLATE
+        # Title placeholder: replace only the first occurrence on the h1 line.
+        text = text.replace("# {제목}", f"# {title}", 1)
+        text = inject_into_prompt(text, glossary_terms)
+        text = text.replace("{transcript text}", transcript)
+    else:
+        text = template
+        text = text.replace("{title}", title)
+        text = text.replace("{glossary}", ", ".join(glossary_terms))
+        text = text.replace("{transcript}", transcript)
     return text
 
 

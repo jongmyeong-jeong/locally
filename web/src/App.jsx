@@ -10,6 +10,9 @@ const Transcribing = lazy(() => import('@/pages/Transcribing'))
 const Summary = lazy(() => import('@/pages/Summary'))
 const Glossary = lazy(() => import('@/pages/Glossary'))
 const ModelSetup = lazy(() => import('@/pages/ModelSetup'))
+const Settings = lazy(() => import('@/pages/Settings'))
+const PromptList = lazy(() => import('@/pages/PromptList'))
+const PromptDetail = lazy(() => import('@/pages/PromptDetail'))
 
 function NotFound() {
   return (
@@ -59,7 +62,7 @@ function Shell({ children }) {
             <Link to="/upload" className="text-muted-foreground hover:text-foreground">업로드</Link>
             <Link to="/recording" className="text-muted-foreground hover:text-foreground">녹음</Link>
             <Link to="/glossary" className="text-muted-foreground hover:text-foreground">용어집</Link>
-            <Link to="/settings/model" className="text-muted-foreground hover:text-foreground">모델</Link>
+            <Link to="/settings" className="text-muted-foreground hover:text-foreground">설정</Link>
           </nav>
         </header>
       )}
@@ -81,7 +84,10 @@ export default function App() {
           <Route path="/upload" element={<Upload />} />
           <Route path="/recording" element={<Recording />} />
           <Route path="/glossary" element={<Glossary />} />
-          <Route path="/settings/model" element={<ModelSetup />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="/settings/model-setup" element={<ModelSetup />} />
+          <Route path="/settings/prompts" element={<PromptList />} />
+          <Route path="/settings/prompts/:id" element={<PromptDetail />} />
           <Route path="*" element={<NotFound />} />
         </Routes>
       </Suspense>

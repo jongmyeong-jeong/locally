@@ -20,14 +20,32 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 
 const PROMPT_PREFIX = '다음 전사 내용을 한국어 회의록으로 정리해주세요'
 
-function InitialOrErrorBlock({ message, onStart, onCopy, tone }) {
+function PromptSelect({ prompts, value, onChange }) {
+  if (!prompts || prompts.length === 0) return null
+  return (
+    <select
+      value={value ?? ''}
+      onChange={(e) => onChange(Number(e.target.value))}
+      className="h-9 rounded border bg-background px-3 text-sm"
+    >
+      {prompts.map((p) => (
+        <option key={p.id} value={p.id}>
+          {p.name || '(이름 없음)'}
+        </option>
+      ))}
+    </select>
+  )
+}
+
+function InitialOrErrorBlock({ message, onStart, onCopy, tone, prompts, selectedPromptId, onSelectPrompt }) {
   return (
     <Card>
       <CardContent className="py-8 space-y-4">
         <p className={`text-sm text-center ${tone === 'error' ? 'text-destructive' : 'text-muted-foreground'}`}>
           {message}
         </p>
-        <div className="flex justify-center gap-2">
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <PromptSelect prompts={prompts} value={selectedPromptId} onChange={onSelectPrompt} />
           <Button onClick={onStart}>AI로 요약</Button>
           <Button variant="outline" onClick={onCopy}>요약 프롬프트 복사</Button>
         </div>
@@ -113,6 +131,20 @@ export default function Summary() {
     retry: false,
   })
 
+  const promptsQ = useQuery({
+    queryKey: qk.prompts(),
+    queryFn: api.listPrompts,
+  })
+
+  const [selectedPromptId, setSelectedPromptId] = useState(null)
+
+  // E2: 첫 로드 시 목록 맨 위 프리셋을 초기값으로
+  useEffect(() => {
+    if (selectedPromptId == null && promptsQ.data?.length > 0) {
+      setSelectedPromptId(promptsQ.data[0].id)
+    }
+  }, [promptsQ.data, selectedPromptId])
+
   // Set default tab once summaryQ resolves (one-shot).
   useEffect(() => {
     if (activeTab !== null) return
@@ -139,7 +171,7 @@ export default function Summary() {
     setActiveTab('summary') // one-shot tab switch on click (AC-5)
     disposeRef.current = api.postSse(
       `/api/documents/${encodeURIComponent(id)}/summarize`,
-      { ai: preferredAi },
+      { ai: preferredAi, prompt_id: selectedPromptId ?? undefined },
       {
         ai_waiting: (evt) => setAiWaiting(evt.payload?.elapsed_s ?? 0),
         complete: () => {
@@ -189,7 +221,7 @@ export default function Summary() {
     }
     let text
     try {
-      const result = await api.getPrompt(id)
+      const result = await api.getPrompt(id, selectedPromptId)
       text = result?.prompt ?? null
     } catch {
       text = null
@@ -243,6 +275,16 @@ export default function Summary() {
                     {summaryQ.data?.content || ''}
                   </ReactMarkdown>
                 </CardContent>
+                <CardContent className="flex flex-wrap items-center justify-center gap-2 border-t pt-4">
+                  <PromptSelect
+                    prompts={promptsQ.data}
+                    value={selectedPromptId}
+                    onChange={setSelectedPromptId}
+                  />
+                  <Button variant="outline" onClick={onStartSummarize}>
+                    다른 프리셋으로 다시 요약
+                  </Button>
+                </CardContent>
               </Card>
             )}
             {summaryState === 'initial' && (
@@ -250,6 +292,9 @@ export default function Summary() {
                 message="아직 요약이 생성되지 않았어요"
                 onStart={onStartSummarize}
                 onCopy={onCopyPrompt}
+                prompts={promptsQ.data}
+                selectedPromptId={selectedPromptId}
+                onSelectPrompt={setSelectedPromptId}
               />
             )}
             {summaryState === 'error' && (
@@ -258,6 +303,9 @@ export default function Summary() {
                 onStart={onStartSummarize}
                 onCopy={onCopyPrompt}
                 tone="error"
+                prompts={promptsQ.data}
+                selectedPromptId={selectedPromptId}
+                onSelectPrompt={setSelectedPromptId}
               />
             )}
           </TabsContent>

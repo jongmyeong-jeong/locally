@@ -177,8 +177,10 @@ const getTranscript = (id) =>
   request(`/api/documents/${encodeURIComponent(id)}/transcript`)
 const getSummary = (id) =>
   request(`/api/documents/${encodeURIComponent(id)}/summary`)
-const getPrompt = (id) =>
-  request(`/api/documents/${encodeURIComponent(id)}/prompt`)
+const getPrompt = (docId, promptId = null) => {
+  const path = `/api/documents/${encodeURIComponent(docId)}/prompt`
+  return request(buildUrl(path, { prompt_id: promptId }))
+}
 
 // Plan §4.2 Glossary
 const getGlossary = () => request('/api/glossary')
@@ -231,6 +233,33 @@ const patchSettings = (data) =>
 // /api/jobs — plan extension
 const listJobs = () => request('/api/jobs')
 
+// Plan §4.2 Prompt presets (bu8)
+const listPrompts = () => request('/api/prompts')
+
+const createPrompt = (body) =>
+  request('/api/prompts', {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  })
+
+const updatePrompt = (id, body) =>
+  request(`/api/prompts/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(body),
+  })
+
+const deletePrompt = (id) =>
+  request(`/api/prompts/${encodeURIComponent(id)}`, { method: 'DELETE' })
+
+const reorderPrompts = (order) =>
+  request('/api/prompts/order', {
+    method: 'PUT',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ order }),
+  })
+
 // Plan §4.2 Recordings (AC-7 / Phase F).
 const createRecording = (body = {}) =>
   request('/api/recordings', {
@@ -278,6 +307,11 @@ export const api = {
   subscribeDocumentEvents,
   startModelDownload,
   listJobs,
+  listPrompts,
+  createPrompt,
+  updatePrompt,
+  deletePrompt,
+  reorderPrompts,
   createRecording,
   postRecordingChunk,
   finalizeRecording,
