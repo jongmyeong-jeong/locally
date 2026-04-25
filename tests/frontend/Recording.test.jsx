@@ -1,6 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { MemoryRouter } from 'react-router-dom'
+import { createMemoryRouter, RouterProvider } from 'react-router-dom'
 
 import { useAppStore } from '@/stores/app'
 import Recording from '@/pages/Recording'
@@ -122,11 +122,10 @@ describe('Recording', () => {
   })
 
   it('waits for pending chunk uploads before finalize', async () => {
-    render(
-      <MemoryRouter>
-        <Recording />
-      </MemoryRouter>,
-    )
+    const router = createMemoryRouter([{ path: '/', element: <Recording /> }], {
+      initialEntries: ['/'],
+    })
+    render(<RouterProvider router={router} />)
 
     fireEvent.click(screen.getByRole('button', { name: '녹음 시작' }))
 
@@ -152,12 +151,32 @@ describe('Recording', () => {
     })
   })
 
+  it('attaches beforeunload handler while recording (AC4 regression)', async () => {
+    const router = createMemoryRouter([{ path: '/', element: <Recording /> }], {
+      initialEntries: ['/'],
+    })
+    render(<RouterProvider router={router} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '녹음 시작' }))
+    await waitFor(() => {
+      expect(apiMock.createRecording).toHaveBeenCalledTimes(1)
+    })
+    await screen.findByRole('button', { name: '정지' })
+
+    // beforeunload event should be cancelled while recording is active.
+    const ev = new Event('beforeunload', { cancelable: true })
+    Object.defineProperty(ev, 'returnValue', { writable: true, value: null })
+    window.dispatchEvent(ev)
+    // Handler sets returnValue (non-null) which triggers the browser dialog;
+    // jsdom reports defaultPrevented=true when preventDefault() is called.
+    expect(ev.defaultPrevented).toBe(true)
+  })
+
   it('prevents duplicate finalize requests on repeated stop clicks', async () => {
-    render(
-      <MemoryRouter>
-        <Recording />
-      </MemoryRouter>,
-    )
+    const router = createMemoryRouter([{ path: '/', element: <Recording /> }], {
+      initialEntries: ['/'],
+    })
+    render(<RouterProvider router={router} />)
 
     fireEvent.click(screen.getByRole('button', { name: '녹음 시작' }))
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useBlocker, useNavigate } from 'react-router-dom'
 
 import api from '@/api/client'
 import { useAppStore } from '@/stores/app'
@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import RecordingWaveform from '@/components/RecordingWaveform'
+import RecordingGuardModal from '@/components/RecordingGuardModal'
 
 // Plan §4.2 + AC-7. Chunk cadence is 10s; MediaRecorder mimeType is fixed.
 const CHUNK_MS = 10000
@@ -32,6 +33,7 @@ export default function Recording() {
   const [title, setTitle] = useState('')
   const [stream, setStream] = useState(null)
   const [elapsedSec, setElapsedSec] = useState(0)
+  const [leaving, setLeaving] = useState(false)
 
   // Refs hold non-React lifecycle state. `seqRef` is monotonically ascending.
   const mediaRecorderRef = useRef(null)
@@ -39,6 +41,7 @@ export default function Recording() {
   const seqRef = useRef(0)
   const sessionIdRef = useRef(null)
   const startedAtRef = useRef(null)
+  const documentIdRef = useRef(null)
   const timerRef = useRef(null)
   const statusRef = useRef('idle')
   const pendingUploadsRef = useRef(new Set())
@@ -49,6 +52,13 @@ export default function Recording() {
   useEffect(() => {
     statusRef.current = recording.status
   }, [recording.status])
+
+  // AC2/AC3: 녹음/마이크 요청/finalize 중 모든 내부 navigation을 인터셉트.
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      currentLocation.pathname !== nextLocation.pathname &&
+      ['requestingMic', 'recording', 'finalizing'].includes(recording.status),
+  )
 
   const stopTracks = useCallback(() => {
     const s = streamRef.current
@@ -82,7 +92,8 @@ export default function Recording() {
 
   const uploadChunk = useCallback(async (sessionId, blob, seq) => {
     try {
-      await api.postRecordingChunk(sessionId, blob, seq)
+      const res = await api.postRecordingChunk(sessionId, blob, seq)
+      if (res?.documentId) documentIdRef.current = res.documentId
     } catch (err) {
       if (err?.status === 409) {
         // Duplicate seq — backend already has it. Log and skip.
@@ -232,6 +243,7 @@ export default function Recording() {
       resetRecording()
       sessionIdRef.current = null
       startedAtRef.current = null
+      documentIdRef.current = null
       pendingUploadsRef.current.clear()
       stopInFlightRef.current = false
       setElapsedSec(0)
@@ -248,6 +260,7 @@ export default function Recording() {
       resetRecording()
       sessionIdRef.current = null
       startedAtRef.current = null
+      documentIdRef.current = null
       pendingUploadsRef.current.clear()
       stopInFlightRef.current = false
       setElapsedSec(0)
@@ -310,8 +323,77 @@ export default function Recording() {
       if (s) s.getTracks().forEach((t) => t.stop())
       pendingUploadsRef.current.clear()
       stopInFlightRef.current = false
+      documentIdRef.current = null
     }
   }, [clearTimer])
+
+  // AC2/AC3/AC5: 이탈 확정 핸들러 — in-flight 청크 대기 → DELETE → 정리 → 이동.
+  const handleConfirmLeave = useCallback(async () => {
+    if (leaving) return
+    if (!blocker || blocker.state !== 'blocked') return
+    setLeaving(true)
+    try {
+      // ① in-flight 청크 업로드 완료 대기 (레이스 방지)
+      await waitForPendingUploads()
+
+      // ② docId가 있으면 DELETE — 없으면(첫 청크 도달 전) skip
+      const docId = documentIdRef.current
+      if (docId) {
+        try {
+          await api.deleteDocument(docId, { deleteAudio: true })
+        } catch (err) {
+          // best-effort: 네트워크 오류여도 사용자 이탈을 막지 않음
+          console.warn('delete failed during leave', err)
+        }
+      }
+
+      // ③ 마이크 스트림 정리 + Zustand reset + ref 정리
+      const mr = mediaRecorderRef.current
+      if (mr && mr.state !== 'inactive') {
+        try { mr.stop() } catch { /* ignore */ }
+      }
+      stopTracks()
+      clearTimer()
+      mediaRecorderRef.current = null
+      sessionIdRef.current = null
+      startedAtRef.current = null
+      documentIdRef.current = null
+      pendingUploadsRef.current.clear()
+      stopInFlightRef.current = false
+      setElapsedSec(0)
+      resetRecording()
+
+      // ④ 이동 진행
+      blocker.proceed()
+    } finally {
+      setLeaving(false)
+    }
+  }, [leaving, blocker, waitForPendingUploads, stopTracks, clearTimer, resetRecording])
+
+  const handleStay = useCallback(() => {
+    if (leaving) return
+    if (blocker && blocker.state === 'blocked') {
+      blocker.reset()
+    }
+  }, [leaving, blocker])
+
+  // AC2(취소 버튼): requestingMic 상태에서 stream/Zustand 정리 후 navigate.
+  const handleCancel = useCallback(() => {
+    const mr = mediaRecorderRef.current
+    if (mr && mr.state !== 'inactive') {
+      try { mr.stop() } catch { /* ignore */ }
+    }
+    stopTracks()
+    clearTimer()
+    mediaRecorderRef.current = null
+    sessionIdRef.current = null
+    startedAtRef.current = null
+    documentIdRef.current = null
+    pendingUploadsRef.current.clear()
+    setElapsedSec(0)
+    resetRecording()
+    navigate('/documents')
+  }, [stopTracks, clearTimer, resetRecording, navigate])
 
   const isIdle = recording.status === 'idle' || recording.status === 'error'
   const isRecording = recording.status === 'recording'
@@ -367,7 +449,7 @@ export default function Recording() {
             )}
             <Button
               variant="outline"
-              onClick={() => navigate('/documents')}
+              onClick={handleCancel}
               disabled={isRecording || isFinalizing}
             >
               취소
@@ -375,6 +457,13 @@ export default function Recording() {
           </div>
         </CardContent>
       </Card>
+
+      <RecordingGuardModal
+        open={blocker?.state === 'blocked'}
+        onLeave={handleConfirmLeave}
+        onStay={handleStay}
+        busy={leaving}
+      />
     </section>
   )
 }

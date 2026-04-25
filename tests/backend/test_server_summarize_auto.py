@@ -98,13 +98,14 @@ class TestUploadTranscribeSummarize:
         from app import transcribe as transcribe_mod
 
         fake_transcript = "안녕하세요 오늘은 Notion 연동 회의입니다."
+        fake_segments = [{"start": 0.0, "end": 5.0, "text": fake_transcript}]
 
         def _fake_transcribe(audio_path, *, model_dir=None, prompt=None, progress_cb=None):
             # Emit a few progress events.
             if progress_cb:
                 for pct in (0.1, 0.4, 0.7, 1.0):
                     progress_cb({"percent": pct, "segment_count": 1, "elapsed_sec": 0.0})
-            return fake_transcript, []
+            return fake_transcript, fake_segments
 
         monkeypatch.setattr(transcribe_mod, "run", _fake_transcribe)
 

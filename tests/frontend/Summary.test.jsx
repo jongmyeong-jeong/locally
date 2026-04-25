@@ -28,9 +28,11 @@ vi.mock('@/api/client', () => ({
       Object.assign(postSseHandlers, handlers)
       return () => {}
     }),
+    getDocument: vi.fn().mockResolvedValue({ id: 'doc-123', status: 'completed' }),
     getSummary: vi.fn().mockRejectedValue(notFound()),
     getTranscript: vi.fn().mockResolvedValue({ content: '' }),
     getPrompt: vi.fn().mockRejectedValue(notFound()),
+    listPrompts: vi.fn().mockResolvedValue([{ id: 1, name: '기본', template: '' }]),
   },
 }))
 

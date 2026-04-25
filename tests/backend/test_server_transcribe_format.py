@@ -95,9 +95,11 @@ class TestTranscribeFormatterWiring:
             assert body["content"] == EXPECTED_CONTENT
             assert body["segments"] == []
 
-    def test_empty_segments_fallback_to_plain_text(
+    def test_empty_segments_marks_transcription_failed(
         self, tmp_home, mock_platform, monkeypatch
     ):
+        # AC6(B): 빈 segments는 transcription_failed로 기록되며 transcript 파일은
+        # 생성되지 않는다. (이전 fallback-to-plain-text 동작은 사양 변경으로 폐기.)
         mock_platform("Darwin", "arm64")
 
         def _fake(audio_path, *, model_dir=None, prompt=None, progress_cb=None):
@@ -106,6 +108,8 @@ class TestTranscribeFormatterWiring:
         app = create_app()
         with TestClient(app) as c:
             doc_id, _ = _create_doc_and_transcribe(c, tmp_home, monkeypatch, _fake)
-            r = c.get(f"/api/documents/{doc_id}/transcript")
+            r = c.get(f"/api/documents/{doc_id}")
             assert r.status_code == 200
-            assert r.json()["content"] == FAKE_TEXT
+            assert r.json()["status"] == "transcription_failed"
+            r = c.get(f"/api/documents/{doc_id}/transcript")
+            assert r.status_code == 404

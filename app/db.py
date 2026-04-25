@@ -6,7 +6,7 @@ Schema (idempotent):
 
 Status values (informational; not a CHECK constraint):
   'recording' | 'pending' | 'transcribing' | 'transcribed' | 'summarizing'
-  | 'completed' | 'error'
+  | 'completed' | 'error' | 'transcription_failed'
 
 create_document(title=None) → title stored as literal 'untitled' (B3).
 """
@@ -70,6 +70,20 @@ def migrate(conn: sqlite3.Connection) -> None:
     for stmt in _INDEXES:
         conn.execute(stmt)
     conn.commit()
+
+
+def migrate_stuck_recordings(conn: sqlite3.Connection) -> int:
+    """Convert stuck in-progress rows to transcription_failed at app startup.
+
+    Idempotent: rows already in 'transcription_failed' are not re-touched
+    (WHERE status IN ('recording','pending')). Returns affected row count.
+    """
+    cur = conn.execute(
+        "UPDATE documents SET status = 'transcription_failed' "
+        "WHERE status IN ('recording', 'pending')"
+    )
+    conn.commit()
+    return cur.rowcount
 
 
 def _row_to_dict(row: sqlite3.Row | None) -> dict | None:

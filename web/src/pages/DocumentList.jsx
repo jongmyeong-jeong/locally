@@ -24,6 +24,7 @@ const STATUS_LABEL = {
   transcribed: '텍스트로 변환 완료',
   summarizing: '요약 중',
   completed: '완료',
+  transcription_failed: '오류', // AC7
   error: '오류',
 }
 

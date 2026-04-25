@@ -1,6 +1,7 @@
 import { Suspense, lazy } from 'react'
 import { Link, Navigate, Route, Routes } from 'react-router-dom'
 import useSystemInfo from '@/hooks/useSystemInfo'
+import { useAppStore } from '@/stores/app'
 
 const DocumentList = lazy(() => import('@/pages/DocumentList'))
 const Upload = lazy(() => import('@/pages/Upload'))
@@ -44,18 +45,24 @@ function RouteLoading() {
 }
 
 function Shell({ children }) {
+  const recordingStatus = useAppStore((s) => s.recording.status)
+  // AC1: 녹음 중/마이크 요청/finalize 단계에서만 헤더 숨김. error/idle은 표시.
+  const hideHeader = ['requestingMic', 'recording', 'finalizing'].includes(recordingStatus)
+
   return (
     <div className="min-h-screen bg-background text-foreground">
-      <header className="border-b">
-        <nav className="mx-auto max-w-3xl p-4 flex gap-4 text-sm">
-          <Link to="/" className="font-semibold">Locally</Link>
-          <Link to="/documents" className="text-muted-foreground hover:text-foreground">기록</Link>
-          <Link to="/upload" className="text-muted-foreground hover:text-foreground">업로드</Link>
-          <Link to="/recording" className="text-muted-foreground hover:text-foreground">녹음</Link>
-          <Link to="/glossary" className="text-muted-foreground hover:text-foreground">용어집</Link>
-          <Link to="/settings/model" className="text-muted-foreground hover:text-foreground">모델</Link>
-        </nav>
-      </header>
+      {!hideHeader && (
+        <header className="border-b">
+          <nav className="mx-auto max-w-3xl p-4 flex gap-4 text-sm">
+            <Link to="/" className="font-semibold">Locally</Link>
+            <Link to="/documents" className="text-muted-foreground hover:text-foreground">기록</Link>
+            <Link to="/upload" className="text-muted-foreground hover:text-foreground">업로드</Link>
+            <Link to="/recording" className="text-muted-foreground hover:text-foreground">녹음</Link>
+            <Link to="/glossary" className="text-muted-foreground hover:text-foreground">용어집</Link>
+            <Link to="/settings/model" className="text-muted-foreground hover:text-foreground">모델</Link>
+          </nav>
+        </header>
+      )}
       <main>{children}</main>
     </div>
   )

@@ -94,6 +94,27 @@ class TestShortRecording:
         body = r.json()
         assert body["error"] == "recording too short"
 
+    def test_finalize_too_short_marks_document_transcription_failed(self, client):
+        """AC6(A): duration < 1.0s finalize → DB status = transcription_failed."""
+        # 1) Start a recording session.
+        sid = client.post("/api/recordings", json={"title": "too short"}).json()["id"]
+        # 2) Upload seq=0 so a document row is created (status='recording').
+        chunk_resp = _upload_chunk(client, sid, 0, b"\x00" * 32)
+        assert chunk_resp.status_code == 200
+        doc_id = chunk_resp.json()["documentId"]
+        # Confirm document exists with status 'recording'.
+        doc_before = client.get(f"/api/documents/{doc_id}").json()
+        assert doc_before["status"] == "recording"
+        # 3) Finalize with durationSec=0.5 (below the 1s floor) → 400.
+        r = client.post(
+            f"/api/recordings/{sid}/finalize", json={"durationSec": 0.5}
+        )
+        assert r.status_code == 400
+        assert r.json()["error"] == "recording too short"
+        # 4) Document status must be 'transcription_failed'.
+        doc_after = client.get(f"/api/documents/{doc_id}").json()
+        assert doc_after["status"] == "transcription_failed"
+
 
 class TestSeq0CreatesDocument:
     def test_seq0_creates_recording_document(self, client):

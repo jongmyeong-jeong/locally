@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -36,6 +36,46 @@ function InitialOrErrorBlock({ message, onStart, onCopy, tone }) {
   )
 }
 
+function FailedTranscriptionBlock({ id }) {
+  const navigate = useNavigate()
+  const qc = useQueryClient()
+  const { toast } = useToast()
+  const [deleting, setDeleting] = useState(false)
+
+  const handleDelete = async () => {
+    if (deleting) return
+    setDeleting(true)
+    try {
+      await api.deleteDocument(id, { deleteAudio: true })
+      qc.invalidateQueries({ queryKey: qk.documents() })
+      qc.removeQueries({ queryKey: qk.document(id), exact: true })
+      toast({ description: '삭제되었습니다' })
+      navigate('/documents')
+    } catch (err) {
+      setDeleting(false)
+      toast({
+        description: err?.message || '삭제에 실패했습니다',
+        variant: 'destructive',
+      })
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="py-8 space-y-4">
+        <p className="text-sm text-center text-destructive">
+          전사가 실패했습니다
+        </p>
+        <div className="flex justify-center">
+          <Button variant="destructive" disabled={deleting} onClick={handleDelete}>
+            삭제
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
 export default function Summary() {
   const { id } = useParams()
   const qc = useQueryClient()
@@ -49,6 +89,15 @@ export default function Summary() {
 
   const { data: settings } = useSettings()
   const preferredAi = settings?.preferredAi ?? 'auto'
+
+  const documentQ = useQuery({
+    queryKey: qk.document(id),
+    queryFn: () => api.getDocument(id),
+    enabled: !!id,
+    retry: false,
+  })
+
+  const isFailed = documentQ.data?.status === 'transcription_failed'
 
   const transcriptQ = useQuery({
     queryKey: qk.transcript(id),
@@ -165,51 +214,55 @@ export default function Summary() {
         </Button>
       </div>
 
-      <Tabs value={activeTab ?? 'transcript'} onValueChange={setActiveTab}>
-        <TabsList>
-          <TabsTrigger value="transcript">원본</TabsTrigger>
-          <TabsTrigger value="summary">요약</TabsTrigger>
-        </TabsList>
-        <TabsContent value="transcript" forceMount className="data-[state=inactive]:hidden">
-          <pre className="whitespace-pre-wrap rounded bg-muted p-4 text-sm">
-            {transcriptQ.data?.content || ''}
-          </pre>
-        </TabsContent>
-        <TabsContent value="summary" forceMount className="data-[state=inactive]:hidden">
-          {summaryState === 'in_progress' && (
-            <Card>
-              <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                AI로 요약을 만들고 있어요...
-                {aiWaiting !== null && <p className="mt-2 text-xs">경과 {aiWaiting}초</p>}
-              </CardContent>
-            </Card>
-          )}
-          {summaryState === 'completed' && (
-            <Card>
-              <CardContent className="prose prose-sm max-w-none py-6 dark:prose-invert">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {summaryQ.data?.content || ''}
-                </ReactMarkdown>
-              </CardContent>
-            </Card>
-          )}
-          {summaryState === 'initial' && (
-            <InitialOrErrorBlock
-              message="아직 요약이 생성되지 않았어요"
-              onStart={onStartSummarize}
-              onCopy={onCopyPrompt}
-            />
-          )}
-          {summaryState === 'error' && (
-            <InitialOrErrorBlock
-              message={streamError?.message || '요약 생성에 실패했어요.'}
-              onStart={onStartSummarize}
-              onCopy={onCopyPrompt}
-              tone="error"
-            />
-          )}
-        </TabsContent>
-      </Tabs>
+      {isFailed ? (
+        <FailedTranscriptionBlock id={id} /> // AC8
+      ) : (
+        <Tabs value={activeTab ?? 'transcript'} onValueChange={setActiveTab}>
+          <TabsList>
+            <TabsTrigger value="transcript">원본</TabsTrigger>
+            <TabsTrigger value="summary">요약</TabsTrigger>
+          </TabsList>
+          <TabsContent value="transcript" forceMount className="data-[state=inactive]:hidden">
+            <pre className="whitespace-pre-wrap rounded bg-muted p-4 text-sm">
+              {transcriptQ.data?.content || ''}
+            </pre>
+          </TabsContent>
+          <TabsContent value="summary" forceMount className="data-[state=inactive]:hidden">
+            {summaryState === 'in_progress' && (
+              <Card>
+                <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                  AI로 요약을 만들고 있어요...
+                  {aiWaiting !== null && <p className="mt-2 text-xs">경과 {aiWaiting}초</p>}
+                </CardContent>
+              </Card>
+            )}
+            {summaryState === 'completed' && (
+              <Card>
+                <CardContent className="prose prose-sm max-w-none py-6 dark:prose-invert">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {summaryQ.data?.content || ''}
+                  </ReactMarkdown>
+                </CardContent>
+              </Card>
+            )}
+            {summaryState === 'initial' && (
+              <InitialOrErrorBlock
+                message="아직 요약이 생성되지 않았어요"
+                onStart={onStartSummarize}
+                onCopy={onCopyPrompt}
+              />
+            )}
+            {summaryState === 'error' && (
+              <InitialOrErrorBlock
+                message={streamError?.message || '요약 생성에 실패했어요.'}
+                onStart={onStartSummarize}
+                onCopy={onCopyPrompt}
+                tone="error"
+              />
+            )}
+          </TabsContent>
+        </Tabs>
+      )}
     </section>
   )
 }

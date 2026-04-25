@@ -535,11 +535,26 @@ def create_app() -> FastAPI:
                     )
                     return
 
+                if not segments:
+                    # AC6(B): 전사 결과 세그먼트가 0개면 transcription_failed로 기록.
+                    with db_mod.open_db() as conn:
+                        db_mod.update_document(
+                            conn, doc_id, status="transcription_failed"
+                        )
+                    await queue.put(
+                        _sse_event(
+                            "error",
+                            {"message": "no segments", "canRetry": False},
+                        )
+                    )
+                    await server_jobs.set_status(doc_id, "error")
+                    return
+
                 # Write transcript file.
                 basename = paths.audio_basename(title, datetime.now(), doc_id=doc_id)
                 out_path = paths.transcripts_dir() / f"{basename}.md"
                 out_path.parent.mkdir(parents=True, exist_ok=True)
-                content = transcript_format_mod.format_transcript_markdown(segments) if segments else text
+                content = transcript_format_mod.format_transcript_markdown(segments)
                 out_path.write_text(content, encoding="utf-8")
 
                 with db_mod.open_db() as conn:
@@ -571,7 +586,8 @@ def create_app() -> FastAPI:
                 )
                 await server_jobs.set_status(doc_id, "error")
                 with db_mod.open_db() as conn:
-                    db_mod.update_document(conn, doc_id, status="error")
+                    # AC6(C): 전사 중 예외도 transcription_failed로 통일.
+                    db_mod.update_document(conn, doc_id, status="transcription_failed")
             finally:
                 await queue.put(None)
 
@@ -887,6 +903,14 @@ def create_app() -> FastAPI:
                 content={"error": "missing chunks", "missing": exc.missing},
             )
         except recordings_mod.RecordingTooShortError as exc:
+            # AC6(A): 너무 짧은 녹음(<1s)은 transcription_failed로 기록 후 400 반환.
+            session = recordings_mod.get_session(session_id)
+            doc_id = session.document_id if session is not None else None
+            if doc_id:
+                with db_mod.open_db() as conn:
+                    db_mod.update_document(
+                        conn, doc_id, status="transcription_failed"
+                    )
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={
@@ -926,6 +950,10 @@ def create_app() -> FastAPI:
         app.mount(
             "/", StaticFiles(directory=str(static_dir), html=True), name="static"
         )
+
+    # AC9: 앱 기동 시 stuck recording/pending row를 transcription_failed로 정리.
+    with db_mod.open_db() as conn:
+        db_mod.migrate_stuck_recordings(conn)
 
     return app
 
