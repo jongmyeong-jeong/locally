@@ -28,7 +28,7 @@ vi.mock('@/api/client', () => ({
       Object.assign(postSseHandlers, handlers)
       return () => {}
     }),
-    getDocument: vi.fn().mockResolvedValue({ id: 'doc-123', status: 'completed' }),
+    getNote: vi.fn().mockResolvedValue({ id: 'doc-123', status: 'completed' }),
     getSummary: vi.fn().mockRejectedValue(notFound()),
     getTranscript: vi.fn().mockResolvedValue({ content: '' }),
     getPrompt: vi.fn().mockRejectedValue(notFound()),
@@ -42,9 +42,9 @@ function renderSummary() {
   })
   return render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/documents/doc-123/summary']}>
+      <MemoryRouter initialEntries={['/notes/doc-123/summary']}>
         <Routes>
-          <Route path="/documents/:id/summary" element={<Summary />} />
+          <Route path="/notes/:id/summary" element={<Summary />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,

@@ -27,7 +27,7 @@ _SENTINEL = None
 @dataclass
 class ChunkJob:
     chunk_id: int       # recording_chunks.id (already inserted with status='queued')
-    document_id: str
+    note_id: str
     seq: int
     start_ms: int
     end_ms: int
@@ -39,11 +39,11 @@ class SessionTranscribeQueue:
 
     def __init__(
         self,
-        document_id: str,
+        note_id: str,
         model_dir: str | None,
         glossary_prompt: str | None,
     ) -> None:
-        self._document_id = document_id
+        self._note_id = note_id
         self._model_dir = model_dir
         self._glossary_prompt = glossary_prompt
 
@@ -235,7 +235,7 @@ def _get_lock() -> asyncio.Lock:
 
 async def create_session_queue(
     session_id: str,
-    document_id: str,
+    note_id: str,
     model_dir: str | None,
     glossary_prompt: str | None,
 ) -> SessionTranscribeQueue:
@@ -244,7 +244,7 @@ async def create_session_queue(
     async with lock:
         if session_id in _QUEUES:
             raise ValueError(f"Session queue already exists for session_id={session_id!r}")
-        q = SessionTranscribeQueue(document_id, model_dir, glossary_prompt)
+        q = SessionTranscribeQueue(note_id, model_dir, glossary_prompt)
         _QUEUES[session_id] = q
         return q
 

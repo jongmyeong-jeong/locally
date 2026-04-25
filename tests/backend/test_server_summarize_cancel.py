@@ -4,7 +4,7 @@ Mock strategy:
   - shutil.which("claude") → path.
   - asyncio.create_subprocess_exec → real `python -c "time.sleep(60)"` so
     cancellation has a real PID to kill.
-  - After POSTing /summarize, issue POST /cancel on the same doc_id.
+  - After POSTing /summarize, issue POST /cancel on the same note_id.
 """
 from __future__ import annotations
 
@@ -60,18 +60,18 @@ class TestSummarizeCancel:
         mock_platform("Darwin", "arm64")
         mock_shutil_which(["claude"])
 
-        # Seed document + transcript.
+        # Seed note + transcript.
         transcript_path = tmp_home / "t.md"
         transcript_path.write_text("some transcript", encoding="utf-8")
         with db_mod.open_db() as conn:
-            doc = db_mod.create_document(conn, title="x")
-            db_mod.update_document(
+            doc = db_mod.create_note(conn, title="x")
+            db_mod.update_note(
                 conn,
                 doc["id"],
                 status="transcribed",
                 transcript_path=str(transcript_path),
             )
-        doc_id = doc["id"]
+        note_id = doc["id"]
 
         # Replace create_subprocess_exec with a long-lived python sleeper.
         real_exec = asyncio.create_subprocess_exec
@@ -95,7 +95,7 @@ class TestSummarizeCancel:
                 time.sleep(0.5)
                 # Retry a few times since server must register job before cancel can find it.
                 for _ in range(20):
-                    r = c.post(f"/api/documents/{doc_id}/cancel")
+                    r = c.post(f"/api/notes/{note_id}/cancel")
                     if r.status_code == 204:
                         break
                     time.sleep(0.1)
@@ -105,7 +105,7 @@ class TestSummarizeCancel:
 
             t0 = time.monotonic()
             r = c.post(
-                f"/api/documents/{doc_id}/summarize",
+                f"/api/notes/{note_id}/summarize",
                 json={"ai": "auto"},
             )
             elapsed = time.monotonic() - t0

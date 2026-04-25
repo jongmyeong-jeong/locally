@@ -38,7 +38,7 @@ const DATE_FORMATTER = new Intl.DateTimeFormat('ko-KR', {
 
 function StatusBadge({ status }) {
   const label = STATUS_LABEL[status] || status
-  // N1 recovery: `status:"recording"` docs get a distinct "진행 중" badge.
+  // N1 recovery: `status:"recording"` notes get a distinct "진행 중" badge.
   const recording = status === 'recording'
   return (
     <span
@@ -63,35 +63,35 @@ function formatDate(iso) {
   }
 }
 
-export default function DocumentList() {
+export default function NoteList() {
   const navigate = useNavigate()
   const qc = useQueryClient()
   const { toast } = useToast()
   const [pendingDelete, setPendingDelete] = useState(null)
 
-  const { data: docs = [], isLoading } = useQuery({
-    queryKey: qk.documents(),
-    queryFn: api.listDocuments,
+  const { data: notes = [], isLoading } = useQuery({
+    queryKey: qk.notes(),
+    queryFn: api.listNotes,
   })
 
   const deleteMut = useMutation({
-    mutationKey: [mk.deleteDocument],
-    mutationFn: (id) => api.deleteDocument(id, { deleteAudio: true }),
+    mutationKey: [mk.deleteNote],
+    mutationFn: (id) => api.deleteNote(id, { deleteAudio: true }),
     onMutate: async (id) => {
-      await qc.cancelQueries({ queryKey: qk.documents() })
-      const previousDocs = qc.getQueryData(qk.documents())
-      qc.setQueryData(qk.documents(), (current = []) =>
-        current.filter((doc) => doc.id !== id),
+      await qc.cancelQueries({ queryKey: qk.notes() })
+      const previousNotes = qc.getQueryData(qk.notes())
+      qc.setQueryData(qk.notes(), (current = []) =>
+        current.filter((note) => note.id !== id),
       )
-      return { previousDocs }
+      return { previousNotes }
     },
     onSuccess: (_, id) => {
-      qc.removeQueries({ queryKey: qk.document(id), exact: true })
+      qc.removeQueries({ queryKey: qk.note(id), exact: true })
       toast({ description: '삭제되었습니다' })
     },
     onError: (err, _id, context) => {
-      if (context?.previousDocs) {
-        qc.setQueryData(qk.documents(), context.previousDocs)
+      if (context?.previousNotes) {
+        qc.setQueryData(qk.notes(), context.previousNotes)
       }
       toast({
         description: err?.message || '삭제에 실패했습니다',
@@ -100,20 +100,20 @@ export default function DocumentList() {
     },
   })
 
-  const onRowClick = (doc) => {
-    if (doc.status === 'completed' || doc.status === 'transcribed') {
-      navigate(`/documents/${doc.id}/summary`)
-    } else if (doc.status === 'transcribing' || doc.status === 'summarizing') {
-      navigate(`/documents/${doc.id}/transcribing`)
+  const onRowClick = (note) => {
+    if (note.status === 'completed' || note.status === 'transcribed') {
+      navigate(`/notes/${note.id}/summary`)
+    } else if (note.status === 'transcribing' || note.status === 'summarizing') {
+      navigate(`/notes/${note.id}/transcribing`)
     } else {
-      navigate(`/documents/${doc.id}/summary`)
+      navigate(`/notes/${note.id}/summary`)
     }
   }
 
   return (
     <section className="mx-auto max-w-3xl p-6 space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">기록</h1>
+        <h1 className="text-2xl font-semibold">노트</h1>
         <div className="flex gap-2">
           <Button variant="outline" asChild>
             <Link to="/upload">업로드</Link>
@@ -126,7 +126,7 @@ export default function DocumentList() {
 
       {isLoading ? (
         <p className="text-sm text-muted-foreground">불러오는 중...</p>
-      ) : docs.length === 0 ? (
+      ) : notes.length === 0 ? (
         <Card>
           <CardContent className="py-12 text-center text-muted-foreground">
             녹음을 시작하거나 파일을 업로드하세요.
@@ -134,26 +134,26 @@ export default function DocumentList() {
         </Card>
       ) : (
         <ul className="space-y-2">
-          {docs.map((doc) => (
-            <li key={doc.id}>
+          {notes.map((note) => (
+            <li key={note.id}>
               <Card className="hover:shadow-md transition-shadow">
                 <CardHeader className="flex flex-row items-start justify-between gap-4 pb-2">
                   <button
                     type="button"
-                    onClick={() => onRowClick(doc)}
+                    onClick={() => onRowClick(note)}
                     className="flex-1 text-left focus:outline-none"
                   >
-                    <CardTitle className="text-base">{doc.title}</CardTitle>
+                    <CardTitle className="text-base">{note.title}</CardTitle>
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {formatDate(doc.createdAt)}
+                      {formatDate(note.createdAt)}
                     </p>
                   </button>
                   <div className="flex items-center gap-2">
-                    <StatusBadge status={doc.status} />
+                    <StatusBadge status={note.status} />
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setPendingDelete(doc)}
+                      onClick={() => setPendingDelete(note)}
                     >
                       삭제
                     </Button>
@@ -173,7 +173,7 @@ export default function DocumentList() {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>기록을 삭제할까요?</DialogTitle>
+            <DialogTitle>노트를 삭제할까요?</DialogTitle>
             <DialogDescription>
               {pendingDelete?.title} · 원본 음성 파일도 함께 삭제됩니다. 이
               작업은 되돌릴 수 없습니다.

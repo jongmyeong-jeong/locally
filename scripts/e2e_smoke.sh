@@ -3,7 +3,7 @@
 #   1. locally --help succeeds
 #   2. locally start --no-browser on a free port
 #   3. GET /api/system/info returns JSON with non-null .os
-#   4. POST /api/documents '{}' returns 201 + title=="untitled"
+#   4. POST /api/notes '{}' returns 201 + title=="untitled"
 #   5. Server terminated cleanly; exit 0
 #
 # Intended to run under `shell: bash` on both macOS and Windows CI matrix.
@@ -86,10 +86,10 @@ if [[ -z "$OS_VALUE" ]]; then
 fi
 log "ok: os=$OS_VALUE"
 
-# --- 6. POST /api/documents '{}' --------------------------------------------
-log "POST /api/documents {}"
+# --- 6. POST /api/notes '{}' --------------------------------------------
+log "POST /api/notes {}"
 DOC=$(curl -sf -X POST -H 'Content-Type: application/json' \
-  -d '{}' "http://127.0.0.1:${FREE_PORT}/api/documents")
+  -d '{}' "http://127.0.0.1:${FREE_PORT}/api/notes")
 TITLE=$(python3 -c "
 import json, sys
 print(json.loads(sys.stdin.read()).get('title',''))

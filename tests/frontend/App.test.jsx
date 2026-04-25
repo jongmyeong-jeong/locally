@@ -14,7 +14,7 @@ vi.mock('@/api/client', () => ({
       aiAvailable: { claude: true, codex: false },
       ffmpegAvailable: true,
     }),
-    listDocuments: vi.fn().mockResolvedValue([]),
+    listNotes: vi.fn().mockResolvedValue([]),
     getGlossary: vi.fn().mockResolvedValue([]),
   },
 }))
@@ -40,17 +40,17 @@ describe('App router smoke', () => {
   })
 
   it('renders Locally brand link', async () => {
-    renderApp(['/documents'])
+    renderApp(['/notes'])
     await waitFor(() => {
       expect(screen.getByText('Locally')).toBeInTheDocument()
     })
   })
 
   it('renders nav links', async () => {
-    renderApp(['/documents'])
+    renderApp(['/notes'])
     await waitFor(() => {
-      // "기록" appears multiple times (nav + page header); assert ≥1 match.
-      expect(screen.getAllByText('기록').length).toBeGreaterThanOrEqual(1)
+      // "노트" appears multiple times (nav + page header); assert ≥1 match.
+      expect(screen.getAllByText('노트').length).toBeGreaterThanOrEqual(1)
       expect(screen.getByText('용어집')).toBeInTheDocument()
     })
   })

@@ -76,7 +76,7 @@ locally start
 ```
 ~/.locally/
 ├── workspace/
-│   ├── documents/  # 전사·요약·프롬프트 파일
+│   ├── notes/  # 전사·요약·프롬프트 파일
 │   └── audio/      # 업로드된 오디오 파일
 ├── models/         # Whisper 모델
 ├── logs/

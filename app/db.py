@@ -1,14 +1,14 @@
-"""Stdlib sqlite3 wrapper for the `documents` table.
+"""Stdlib sqlite3 wrapper for the `notes` table.
 
 Schema (idempotent):
-  documents(id TEXT PRIMARY KEY, title TEXT, created_at TEXT, status TEXT,
-            audio_path TEXT, transcript_path TEXT, summary_path TEXT)
+  notes(id TEXT PRIMARY KEY, title TEXT, created_at TEXT, status TEXT,
+        audio_path TEXT, transcript_path TEXT, summary_path TEXT)
 
 Status values (informational; not a CHECK constraint):
   'recording' | 'pending' | 'transcribing' | 'transcribed' | 'summarizing'
   | 'completed' | 'error' | 'transcription_failed'
 
-create_document(title=None) → title stored as literal 'untitled' (B3).
+create_note(title=None) → title stored as literal 'untitled' (B3).
 """
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ from pathlib import Path
 from app.paths import db_path
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS documents (
+CREATE TABLE IF NOT EXISTS notes (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL DEFAULT 'untitled',
     created_at TEXT NOT NULL,
@@ -32,13 +32,13 @@ CREATE TABLE IF NOT EXISTS documents (
 """
 
 _INDEXES = (
-    "CREATE INDEX IF NOT EXISTS idx_documents_created_at ON documents(created_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at DESC)",
 )
 
 _SCHEMA_CHUNKS = """
 CREATE TABLE IF NOT EXISTS recording_chunks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE,
     seq INTEGER NOT NULL,
     start_ms INTEGER NOT NULL,
     end_ms INTEGER NOT NULL,
@@ -47,12 +47,12 @@ CREATE TABLE IF NOT EXISTS recording_chunks (
     text TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
-    UNIQUE(document_id, seq)
+    UNIQUE(note_id, seq)
 )
 """
 
 _INDEXES_CHUNKS = (
-    "CREATE INDEX IF NOT EXISTS idx_recording_chunks_document ON recording_chunks(document_id, seq)",
+    "CREATE INDEX IF NOT EXISTS idx_recording_chunks_note ON recording_chunks(note_id, seq)",
 )
 
 _ALLOWED_UPDATE_COLUMNS = {
@@ -63,7 +63,7 @@ _ALLOWED_UPDATE_COLUMNS = {
     "summary_path",
 }
 
-# Map camelCase aliases accepted by update_document to DB columns.
+# Map camelCase aliases accepted by update_note to DB columns.
 _UPDATE_ALIASES = {
     "audioPath": "audio_path",
     "transcriptPath": "transcript_path",
@@ -102,7 +102,7 @@ def migrate_stuck_recordings(conn: sqlite3.Connection) -> int:
     (WHERE status IN ('recording','pending')). Returns affected row count.
     """
     cur = conn.execute(
-        "UPDATE documents SET status = 'transcription_failed' "
+        "UPDATE notes SET status = 'transcription_failed' "
         "WHERE status IN ('recording', 'pending')"
     )
     conn.commit()
@@ -123,47 +123,47 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict | None:
     }
 
 
-def create_document(
+def create_note(
     conn: sqlite3.Connection,
     title: str | None = None,
     audio_path: str | None = None,
     *,
     status: str = "pending",
 ) -> dict:
-    """Insert a document row.
+    """Insert a note row.
 
     Behavior (B3):
       - title is None or empty string → stored as literal 'untitled'.
       - Otherwise title is stored verbatim (no trim, no slugify).
       - status defaults to 'pending'.
     """
-    doc_id = str(uuid.uuid4())
+    note_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
     stored_title = title if title else "untitled"
     conn.execute(
-        "INSERT INTO documents (id, title, created_at, status, audio_path) "
+        "INSERT INTO notes (id, title, created_at, status, audio_path) "
         "VALUES (?, ?, ?, ?, ?)",
-        (doc_id, stored_title, created_at, status, audio_path),
+        (note_id, stored_title, created_at, status, audio_path),
     )
     conn.commit()
-    return get_document(conn, doc_id)  # type: ignore[return-value]
+    return get_note(conn, note_id)  # type: ignore[return-value]
 
 
-def get_document(conn: sqlite3.Connection, doc_id: str) -> dict | None:
+def get_note(conn: sqlite3.Connection, note_id: str) -> dict | None:
     row = conn.execute(
-        "SELECT * FROM documents WHERE id = ?", (doc_id,)
+        "SELECT * FROM notes WHERE id = ?", (note_id,)
     ).fetchone()
     return _row_to_dict(row)
 
 
-def list_documents(conn: sqlite3.Connection) -> list[dict]:
+def list_notes(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
-        "SELECT * FROM documents ORDER BY created_at DESC"
+        "SELECT * FROM notes ORDER BY created_at DESC"
     ).fetchall()
     return [_row_to_dict(r) for r in rows]  # type: ignore[misc]
 
 
-def update_document(conn: sqlite3.Connection, doc_id: str, **fields) -> dict | None:
+def update_note(conn: sqlite3.Connection, note_id: str, **fields) -> dict | None:
     sets: list[str] = []
     values: list[object] = []
     for key, value in fields.items():
@@ -172,26 +172,26 @@ def update_document(conn: sqlite3.Connection, doc_id: str, **fields) -> dict | N
             sets.append(f"{column} = ?")
             values.append(value)
     if not sets:
-        return get_document(conn, doc_id)
-    values.append(doc_id)
+        return get_note(conn, note_id)
+    values.append(note_id)
     conn.execute(
-        f"UPDATE documents SET {', '.join(sets)} WHERE id = ?",
+        f"UPDATE notes SET {', '.join(sets)} WHERE id = ?",
         values,
     )
     conn.commit()
-    return get_document(conn, doc_id)
+    return get_note(conn, note_id)
 
 
-def delete_document(
+def delete_note(
     conn: sqlite3.Connection,
-    doc_id: str,
+    note_id: str,
     *,
     delete_audio: bool = False,
 ) -> None:
     row = conn.execute(
-        "SELECT audio_path FROM documents WHERE id = ?", (doc_id,)
+        "SELECT audio_path FROM notes WHERE id = ?", (note_id,)
     ).fetchone()
-    conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
+    conn.execute("DELETE FROM notes WHERE id = ?", (note_id,))
     conn.commit()
     if delete_audio and row is not None and row["audio_path"]:
         try:

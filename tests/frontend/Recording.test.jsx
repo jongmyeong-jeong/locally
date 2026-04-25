@@ -61,11 +61,11 @@ describe('Recording', () => {
     apiMock.finalizeRecording.mockImplementation((_id, _body, handlers) => {
       if (handlers) {
         Promise.resolve().then(() =>
-          handlers.complete({ payload: { documentId: 'doc-1' } }),
+          handlers.complete({ payload: { noteId: 'doc-1' } }),
         )
         return () => {}
       }
-      return Promise.resolve({ documentId: 'doc-1' })
+      return Promise.resolve({ noteId: 'doc-1' })
     })
 
     const fakeStream = {

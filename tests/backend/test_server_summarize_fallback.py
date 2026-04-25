@@ -46,26 +46,26 @@ class TestSummarizeFallback:
         mock_platform("Darwin", "arm64")
         mock_shutil_which([])  # no claude, no codex
 
-        # Seed a document with a transcript file.
+        # Seed a note with a transcript file.
         transcript = "오늘은 Notion 연동 회의였습니다."
-        transcript_path = tmp_home / ".locally" / "workspace" / "documents" / "t.md"
+        transcript_path = tmp_home / ".locally" / "workspace" / "notes" / "t.md"
         transcript_path.parent.mkdir(parents=True, exist_ok=True)
         transcript_path.write_text(transcript, encoding="utf-8")
 
         with db_mod.open_db() as conn:
-            doc = db_mod.create_document(conn, title="회의")
-            db_mod.update_document(
+            doc = db_mod.create_note(conn, title="회의")
+            db_mod.update_note(
                 conn,
                 doc["id"],
                 status="transcribed",
                 transcript_path=str(transcript_path),
             )
-        doc_id = doc["id"]
+        note_id = doc["id"]
 
         app = create_app()
         with TestClient(app) as c:
             r = c.post(
-                f"/api/documents/{doc_id}/summarize",
+                f"/api/notes/{note_id}/summarize",
                 json={"ai": "auto"},
             )
             assert r.status_code == 200
@@ -84,7 +84,7 @@ class TestSummarizeFallback:
         assert data["transcript"] == transcript
 
         # {slug}.prompt.md file exists in transcripts/ subfolder.
-        transcripts = tmp_home / ".locally" / "workspace" / "documents" / "transcripts"
+        transcripts = tmp_home / ".locally" / "workspace" / "notes" / "transcripts"
         prompt_files = list(transcripts.glob("*.prompt.md"))
         assert len(prompt_files) == 1
 
@@ -100,8 +100,8 @@ class TestSummarizeFallback:
         transcript_path.write_text(transcript, encoding="utf-8")
 
         with db_mod.open_db() as conn:
-            doc = db_mod.create_document(conn, title="회의")
-            db_mod.update_document(
+            doc = db_mod.create_note(conn, title="회의")
+            db_mod.update_note(
                 conn,
                 doc["id"],
                 status="transcribed",
@@ -111,7 +111,7 @@ class TestSummarizeFallback:
         app = create_app()
         with TestClient(app) as c:
             r = c.post(
-                f"/api/documents/{doc['id']}/summarize",
+                f"/api/notes/{doc['id']}/summarize",
                 json={"ai": "none"},
             )
             events = _parse_sse(r.text)

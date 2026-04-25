@@ -26,7 +26,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 
 def insert_chunk(
     conn: sqlite3.Connection,
-    document_id: str,
+    note_id: str,
     seq: int,
     start_ms: int,
     end_ms: int,
@@ -35,9 +35,9 @@ def insert_chunk(
     now = _now_iso()
     cur = conn.execute(
         "INSERT INTO recording_chunks "
-        "(document_id, seq, start_ms, end_ms, status, retry_count, created_at, updated_at) "
+        "(note_id, seq, start_ms, end_ms, status, retry_count, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, 'queued', 0, ?, ?)",
-        (document_id, seq, start_ms, end_ms, now, now),
+        (note_id, seq, start_ms, end_ms, now, now),
     )
     conn.commit()
     return cur.lastrowid  # type: ignore[return-value]
@@ -68,30 +68,30 @@ def update_chunk_status(
     conn.commit()
 
 
-def get_chunks(conn: sqlite3.Connection, document_id: str) -> list[dict]:
-    """Return all chunks for a document ordered by seq."""
+def get_chunks(conn: sqlite3.Connection, note_id: str) -> list[dict]:
+    """Return all chunks for a note ordered by seq."""
     rows = conn.execute(
-        "SELECT * FROM recording_chunks WHERE document_id = ? ORDER BY seq",
-        (document_id,),
+        "SELECT * FROM recording_chunks WHERE note_id = ? ORDER BY seq",
+        (note_id,),
     ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 
-def get_failed_chunks(conn: sqlite3.Connection, document_id: str) -> list[dict]:
+def get_failed_chunks(conn: sqlite3.Connection, note_id: str) -> list[dict]:
     """Return chunks with status='failed', ordered by seq."""
     rows = conn.execute(
-        "SELECT * FROM recording_chunks WHERE document_id = ? AND status = 'failed' ORDER BY seq",
-        (document_id,),
+        "SELECT * FROM recording_chunks WHERE note_id = ? AND status = 'failed' ORDER BY seq",
+        (note_id,),
     ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 
-def all_chunks_done(conn: sqlite3.Connection, document_id: str) -> bool:
+def all_chunks_done(conn: sqlite3.Connection, note_id: str) -> bool:
     """True iff every chunk has status='success'. False if no rows exist."""
     row = conn.execute(
         "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS done "
-        "FROM recording_chunks WHERE document_id = ?",
-        (document_id,),
+        "FROM recording_chunks WHERE note_id = ?",
+        (note_id,),
     ).fetchone()
     total = row["total"]
     done = row["done"] or 0

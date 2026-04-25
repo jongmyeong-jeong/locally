@@ -3,7 +3,7 @@
 Layout (platform-agnostic via pathlib.Path.home()):
   ~/.locally/                 ← locally_home()
     ├── workspace/            ← workspace_root()
-    │   ├── documents/
+    │   ├── notes/
     │   │   ├── transcripts/
     │   │   └── summaries/
     │   ├── audio/
@@ -32,9 +32,9 @@ _SLUG_FALLBACK = "untitled"
 # Keep Hangul syllables + Jamo + ASCII letters/digits + hyphen.
 _SLUG_ALLOWED = re.compile(
     r"[^A-Za-z0-9\-"
-    r"\uAC00-\uD7A3"  # Hangul syllables
-    r"\u1100-\u11FF"  # Hangul Jamo
-    r"\u3130-\u318F"  # Hangul compatibility Jamo
+    r"가-힣"  # Hangul syllables
+    r"ᄀ-ᇿ"  # Hangul Jamo
+    r"㄰-㆏"  # Hangul compatibility Jamo
     r"]+"
 )
 _WHITESPACE = re.compile(r"\s+")
@@ -55,16 +55,16 @@ def locally_home() -> Path:
     return _ensure(Path.home() / ".locally")
 
 
-def documents_dir() -> Path:
-    return _ensure(workspace_root() / "documents")
+def notes_dir() -> Path:
+    return _ensure(workspace_root() / "notes")
 
 
 def transcripts_dir() -> Path:
-    return _ensure(documents_dir() / "transcripts")
+    return _ensure(notes_dir() / "transcripts")
 
 
 def summaries_dir() -> Path:
-    return _ensure(documents_dir() / "summaries")
+    return _ensure(notes_dir() / "summaries")
 
 
 def audio_dir() -> Path:
@@ -130,17 +130,17 @@ def slugify(text: str, *, max_len: int = 50) -> str:
     return s
 
 
-def audio_basename(title: str | None, now: datetime, *, doc_id: str | None = None) -> str:
-    """Return '{YYYY-MM-DD}-{slug}[-{doc_id[:8]}]' (no extension).
+def audio_basename(title: str | None, now: datetime, *, note_id: str | None = None) -> str:
+    """Return '{YYYY-MM-DD}-{slug}[-{note_id[:8]}]' (no extension).
 
     slugify is always non-empty so no extra fallback is needed here.
-    doc_id suffix guarantees uniqueness across multiple transcriptions of the same title.
+    note_id suffix guarantees uniqueness across multiple transcriptions of the same title.
     """
     date_str = now.strftime("%Y-%m-%d")
     slug = slugify(title if title is not None else "")
     base = f"{date_str}-{slug}"
-    if doc_id:
-        base = f"{base}-{doc_id[:8]}"
+    if note_id:
+        base = f"{base}-{note_id[:8]}"
     return base
 
 

@@ -2,8 +2,8 @@
 //
 // 사용 시나리오:
 //   Recording.jsx에서 finalize SSE 도중 탭이 닫히거나 페이지가 새로고침되면
-//   문서 상태가 'finalizing'으로 남을 수 있다.
-//   같은 문서 URL로 복귀하면 Summary.jsx가 이 훅을 통해
+//   노트 상태가 'finalizing'으로 남을 수 있다.
+//   같은 노트 URL로 복귀하면 Summary.jsx가 이 훅을 통해
 //   상태가 'transcribed' 또는 'transcription_failed'로 바뀔 때까지 폴링한다.
 
 import { useCallback, useEffect, useRef } from 'react'
@@ -12,18 +12,18 @@ const POLL_INTERVAL_MS = 3000
 const MAX_POLLS = 100 // 최대 5분 (3s × 100)
 
 /**
- * useFinalizePoller — 문서 상태가 'finalizing'일 때 완료를 기다리는 폴링 훅.
+ * useFinalizePoller — 노트 상태가 'finalizing'일 때 완료를 기다리는 폴링 훅.
  *
  * @param {object} options
  * @param {boolean} options.enabled       - true일 때만 폴링 시작
- * @param {() => Promise<{status: string}>} options.fetchDocument - 문서를 다시 가져오는 함수
+ * @param {() => Promise<{status: string}>} options.fetchNote - 노트를 다시 가져오는 함수
  * @param {(status: string) => void} options.onSettled - 'transcribed'|'transcription_failed'에 도달하면 호출
  * @param {number} [options.intervalMs]   - 폴링 간격 (기본 3000ms, 테스트에서 오버라이드 가능)
  * @param {number} [options.maxPolls]     - 최대 폴링 횟수 (기본 100)
  */
 export function useFinalizePoller({
   enabled,
-  fetchDocument,
+  fetchNote,
   onSettled,
   onTimeout,
   onError,
@@ -82,9 +82,9 @@ export function useFinalizePoller({
 
       pollCountRef.current += 1
 
-      let doc
+      let note
       try {
-        doc = await fetchDocument()
+        note = await fetchNote()
       } catch (error) {
         // 네트워크 오류 — 재시도 예정
         if (!activeRef.current) return
@@ -100,10 +100,10 @@ export function useFinalizePoller({
 
       if (!activeRef.current) return
 
-      const { status } = doc
+      const { status } = note
       if (status === 'transcribed' || status === 'transcription_failed') {
         stop()
-        onSettledRef.current(doc)
+        onSettledRef.current(note)
         return
       }
 
@@ -115,5 +115,5 @@ export function useFinalizePoller({
     poll()
 
     return stop
-  }, [enabled, fetchDocument, intervalMs, maxPolls, stop])
+  }, [enabled, fetchNote, intervalMs, maxPolls, stop])
 }

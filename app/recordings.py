@@ -3,12 +3,12 @@
 Flow:
   1. start_session(title?) → returns {id, uploadUrl}.
   2. POST chunks with (seq, blob); append_chunk stores seq→bytes mapping.
-     On seq==0, create a Document row with status='recording' (N1).
+     On seq==0, create a Note row with status='recording' (N1).
      Duplicate seq → ChunkSeqConflict → HTTP 409.
   3. finalize(session_id, title?) → validates contiguous seq 0..N-1;
      missing → ChunkGapError → HTTP 400.
-     Writes concatenated .webm into audio_dir(), updates Document to 'pending',
-     returns {audioPath, documentId}. Total duration <1s → RecordingTooShortError.
+     Writes concatenated .webm into audio_dir(), updates Note to 'pending',
+     returns {audioPath, noteId}. Total duration <1s → RecordingTooShortError.
 
 Notes:
   - Duration <1s check requires probing the audio file (ffprobe) in practice.
@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO
 
-from app.db import create_document, update_document
+from app.db import create_note, update_note
 from app.paths import audio_basename, audio_dir, locally_home
 
 
@@ -60,7 +60,7 @@ class RecordingTooShortError(Exception):
 @dataclass
 class RecordingSession:
     id: str
-    document_id: str | None = None
+    note_id: str | None = None
     title: str | None = None
     started_at: float = field(default_factory=time.time)
     # seq → bytes; kept in memory and also flushed to disk by append_chunk.
@@ -134,9 +134,9 @@ def append_chunk(
 ) -> dict:
     """Append one chunk to the session; validate seq uniqueness.
 
-    N1: on seq==0, create a Document row with status='recording' so the
-    session shows up in GET /api/documents for recovery.
-    Returns {documentId, bytes_written}.
+    N1: on seq==0, create a Note row with status='recording' so the
+    session shows up in GET /api/notes for recovery.
+    Returns {noteId, bytes_written}.
     """
     return append_chunk_stream(conn, session_id, BytesIO(chunk_bytes), seq)
 
@@ -154,7 +154,7 @@ def append_chunk_stream(
     Keeps the upload hot path on a streaming write path so large chunks do not
     require an additional in-memory bytes copy at the HTTP layer.
     """
-    session_title, document_id, needs_document = _reserve_chunk(session_id, seq)
+    session_title, note_id, needs_note = _reserve_chunk(session_id, seq)
     tmp_path = _session_tmp_path(session_id)
     bytes_written = 0
     try:
@@ -165,19 +165,19 @@ def append_chunk_stream(
                     break
                 handle.write(part)
                 bytes_written += len(part)
-        if needs_document:
+        if needs_note:
             if conn is None:
-                raise RuntimeError("append_chunk requires conn when creating a document")
+                raise RuntimeError("append_chunk requires conn when creating a note")
             basename = audio_basename(session_title, datetime.now())
             audio_path = audio_dir() / f"{basename}.webm"
-            doc = create_document(
+            note = create_note(
                 conn,
                 title=session_title,
                 audio_path=str(audio_path),
                 status="recording",
             )
-            document_id = _attach_document_id(session_id, doc["id"])
-        return {"documentId": document_id, "bytes_written": bytes_written}
+            note_id = _attach_note_id(session_id, note["id"])
+        return {"noteId": note_id, "bytes_written": bytes_written}
     except Exception:
         _rollback_reserved_chunk(session_id, seq)
         raise
@@ -196,16 +196,16 @@ def _reserve_chunk(session_id: str, seq: int) -> tuple[str | None, str | None, b
         session.chunk_count += 1
         if seq > session.max_seq:
             session.max_seq = seq
-        return session.title, session.document_id, seq == 0 and session.document_id is None
+        return session.title, session.note_id, seq == 0 and session.note_id is None
 
 
-def _attach_document_id(session_id: str, document_id: str) -> str:
+def _attach_note_id(session_id: str, note_id: str) -> str:
     with _LOCK:
         session = _SESSIONS.get(session_id)
         if session is None:
             raise KeyError(f"unknown recording session: {session_id}")
-        session.document_id = document_id
-        return session.document_id
+        session.note_id = note_id
+        return session.note_id
 
 
 def _rollback_reserved_chunk(session_id: str, seq: int) -> None:
@@ -234,12 +234,12 @@ def finalize(
     duration_sec: float | None = None,
     live: bool = False,
 ) -> dict:
-    """Validate contiguous seqs, move file to audio_dir, update document.
+    """Validate contiguous seqs, move file to audio_dir, update note.
 
     If any seq in [0, max(seen)) is missing → ChunkGapError.
     If no chunks seen → ChunkGapError(missing=[0]).
     If duration_sec is provided and < 1.0 → RecordingTooShortError.
-    Returns {'audioPath', 'documentId'}.
+    Returns {'audioPath', 'noteId'}.
     """
     with _LOCK:
         session = _SESSIONS.get(session_id)
@@ -257,17 +257,17 @@ def finalize(
     if duration_sec is not None and duration_sec < 1.0:
         raise RecordingTooShortError(min_sec=1)
 
-    if session.document_id is None:
-        # seq=0 must have been appended to create the document, but be defensive.
+    if session.note_id is None:
+        # seq=0 must have been appended to create the note, but be defensive.
         basename = audio_basename(title or session.title, datetime.now())
         dest = audio_dir() / f"{basename}.webm"
-        doc = create_document(conn, title=title or session.title, audio_path=str(dest))
-        session.document_id = doc["id"]
+        note = create_note(conn, title=title or session.title, audio_path=str(dest))
+        session.note_id = note["id"]
     else:
-        doc = _fetch_document(conn, session.document_id)
-        if doc is None:
-            raise KeyError(f"document not found: {session.document_id}")
-        dest = Path(doc["audioPath"]) if doc["audioPath"] else (
+        note = _fetch_note(conn, session.note_id)
+        if note is None:
+            raise KeyError(f"note not found: {session.note_id}")
+        dest = Path(note["audioPath"]) if note["audioPath"] else (
             audio_dir() / f"{audio_basename(title or session.title, datetime.now())}.webm"
         )
 
@@ -286,9 +286,9 @@ def finalize(
 
     # live=True → 'finalizing' (real-time pre-transcription path); default 'pending' for legacy file-upload finalize
     status = "finalizing" if live else "pending"
-    update_document(
+    update_note(
         conn,
-        session.document_id,
+        session.note_id,
         status=status,
         audio_path=str(dest),
     )
@@ -296,14 +296,14 @@ def finalize(
     with _LOCK:
         _SESSIONS.pop(session_id, None)
 
-    return {"audioPath": str(dest), "documentId": session.document_id}
+    return {"audioPath": str(dest), "noteId": session.note_id}
 
 
-def _fetch_document(conn: sqlite3.Connection, doc_id: str) -> dict | None:
+def _fetch_note(conn: sqlite3.Connection, note_id: str) -> dict | None:
     # Tiny local wrapper; keeps the import graph flat.
-    from app.db import get_document
+    from app.db import get_note
 
-    return get_document(conn, doc_id)
+    return get_note(conn, note_id)
 
 
 def _find_missing_seqs(seen_seqs: set[int], max_seq: int) -> list[int]:

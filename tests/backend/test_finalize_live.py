@@ -5,8 +5,8 @@ Cases:
   1. POST /api/recordings with no model → 503 {"error": "model_not_installed"}
   2. Two concurrent POST /api/recordings → second returns 409 {"error": "concurrent_recording"}
   3. Full happy-path: start → finalize with mocked transcription → 'complete' SSE event,
-     document status='transcribed'.
-  4. File-upload regression: POST /api/documents + POST .../transcribe → 'transcribed'
+     note status='transcribed'.
+  4. File-upload regression: POST /api/notes + POST .../transcribe → 'transcribed'
      via the old (non-live) path.
 """
 from __future__ import annotations
@@ -123,7 +123,7 @@ class TestCreateRecording409:
 
 class TestFinalizeLiveHappyPath:
     def test_finalize_live_happy_path(self, tmp_home, monkeypatch):
-        """Start session → finalize → 'complete' SSE event → document status='transcribed'.
+        """Start session → finalize → 'complete' SSE event → note status='transcribed'.
 
         Simplification: no chunk uploads (no VAD boundaries → empty transcript).
         The finalize path still emits progress + complete events and sets
@@ -142,15 +142,15 @@ class TestFinalizeLiveHappyPath:
             assert r_start.status_code == 201
             sid = r_start.json()["id"]
 
-            # 2. Upload one chunk so a document row is created (seq=0 creates the doc).
+            # 2. Upload one chunk so a note row is created (seq=0 creates the doc).
             chunk_resp = c.post(
                 f"/api/recordings/{sid}/chunk",
                 data={"seq": "0"},
                 files={"chunk": ("chunk.webm", io.BytesIO(b"\x1a\x45\xdf\xa3" + b"\x00" * 124), "application/octet-stream")},
             )
             assert chunk_resp.status_code == 200
-            doc_id = chunk_resp.json()["documentId"]
-            assert doc_id  # document was created on seq=0
+            note_id = chunk_resp.json()["noteId"]
+            assert note_id  # note was created on seq=0
 
             # 3. Finalize — returns SSE stream.
             r_fin = c.post(
@@ -169,12 +169,12 @@ class TestFinalizeLiveHappyPath:
             assert complete_events, f"No 'complete' event; events={event_names}"
 
             body = complete_events[0]["data"]
-            # complete event must carry the document id.
-            assert body.get("documentId") == doc_id
+            # complete event must carry the note id.
+            assert body.get("noteId") == note_id
 
             # 5. Verify DB status.
             with db_mod.open_db() as conn:
-                doc = db_mod.get_document(conn, doc_id)
+                doc = db_mod.get_note(conn, note_id)
             assert doc is not None
             assert doc["status"] == "transcribed", (
                 f"Expected 'transcribed', got {doc['status']!r}"
@@ -193,7 +193,7 @@ class TestFinalizeLiveHappyPath:
 
 class TestFileUploadRegression:
     def test_file_upload_path_regression(self, tmp_home, mock_platform, monkeypatch):
-        """POST /api/documents + POST .../transcribe → pending → transcribing → transcribed.
+        """POST /api/notes + POST .../transcribe → pending → transcribing → transcribed.
 
         Confirms the non-live transcription path is unaffected by live changes.
         """
@@ -214,16 +214,16 @@ class TestFileUploadRegression:
 
         app = create_app()
         with TestClient(app) as c:
-            # Create document via old file-upload path.
+            # Create note via old file-upload path.
             r_doc = c.post(
-                "/api/documents",
+                "/api/notes",
                 json={"title": "file upload test", "audioPath": str(audio)},
             )
             assert r_doc.status_code == 201
-            doc_id = r_doc.json()["id"]
+            note_id = r_doc.json()["id"]
 
             # Trigger transcription SSE.
-            r_tx = c.post(f"/api/documents/{doc_id}/transcribe")
+            r_tx = c.post(f"/api/notes/{note_id}/transcribe")
             assert r_tx.status_code == 200
 
             events = _parse_sse(r_tx.text)
@@ -232,7 +232,7 @@ class TestFileUploadRegression:
 
             # DB status must be 'transcribed'.
             with db_mod.open_db() as conn:
-                doc = db_mod.get_document(conn, doc_id)
+                doc = db_mod.get_note(conn, note_id)
             assert doc is not None
             assert doc["status"] == "transcribed"
             assert doc["transcriptPath"] is not None

@@ -197,7 +197,7 @@ def _safe_kill(proc: asyncio.subprocess.Process) -> None:
 
 def write_outputs(
     *,
-    doc_id: str,
+    note_id: str,
     slug: str,
     summary_md: str | None,
     prompt_md: str,

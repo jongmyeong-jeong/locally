@@ -7,13 +7,13 @@ import pytest
 
 from app import db as mod
 from app.db import (
-    create_document,
-    delete_document,
-    get_document,
-    list_documents,
+    create_note,
+    delete_note,
+    get_note,
+    list_notes,
     migrate,
     open_db,
-    update_document,
+    update_note,
 )
 
 
@@ -38,21 +38,21 @@ def conn(tmp_path):
 
 
 class TestSchema:
-    def test_creates_documents_table(self, conn):
+    def test_creates_notes_table(self, conn):
         rows = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='documents'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='notes'"
         ).fetchall()
         assert len(rows) == 1
 
     def test_migrate_is_idempotent(self, conn):
         migrate(conn)  # second call must not raise
         rows = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='documents'"
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='notes'"
         ).fetchall()
         assert len(rows) == 1
 
     def test_all_expected_columns_exist(self, conn):
-        cols = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+        cols = {row["name"] for row in conn.execute("PRAGMA table_info(notes)")}
         assert {
             "id",
             "title",
@@ -72,12 +72,12 @@ class TestSchema:
             c.close()
 
 
-# ── create_document ─────────────────────────────────────────────────────
+# ── create_note ─────────────────────────────────────────────────────
 
 
-class TestCreateDocument:
+class TestCreateNote:
     def test_creates_with_title_and_audio_path(self, conn):
-        doc = create_document(conn, title="Notion meeting", audio_path="/tmp/a.wav")
+        doc = create_note(conn, title="Notion meeting", audio_path="/tmp/a.wav")
         assert doc["id"]
         assert doc["title"] == "Notion meeting"
         assert doc["audioPath"] == "/tmp/a.wav"
@@ -86,138 +86,138 @@ class TestCreateDocument:
         assert doc["transcriptPath"] is None
         assert doc["summaryPath"] is None
 
-    def test_create_document_no_title(self, conn):
+    def test_create_note_no_title(self, conn):
         """B3: title=None → stored as literal 'untitled'.
 
         This test is a Phase B gate-blocker per the plan §3 Change Matrix.
         """
-        doc = create_document(conn)
+        doc = create_note(conn)
         assert doc["title"] == "untitled"
         assert doc["status"] == "pending"
 
     def test_empty_string_title_treated_as_untitled(self, conn):
         """B3 extension: empty string also falls back to 'untitled'."""
-        doc = create_document(conn, title="")
+        doc = create_note(conn, title="")
         assert doc["title"] == "untitled"
 
     def test_explicit_audio_path_none_is_stored(self, conn):
-        doc = create_document(conn, title="t")
+        doc = create_note(conn, title="t")
         assert doc["audioPath"] is None
 
     def test_ids_are_unique(self, conn):
-        a = create_document(conn, title="a")
-        b = create_document(conn, title="b")
+        a = create_note(conn, title="a")
+        b = create_note(conn, title="b")
         assert a["id"] != b["id"]
 
     def test_keeps_verbatim_title(self, conn):
         """No slugify at DB layer; title is stored as-given."""
-        doc = create_document(conn, title="  Weird / Title!  ")
+        doc = create_note(conn, title="  Weird / Title!  ")
         assert doc["title"] == "  Weird / Title!  "
 
 
-# ── get_document / list_documents ───────────────────────────────────────
+# ── get_note / list_notes ───────────────────────────────────────
 
 
 class TestReadPath:
-    def test_get_document_returns_row(self, conn):
-        created = create_document(conn, title="x", audio_path="/x")
-        found = get_document(conn, created["id"])
+    def test_get_note_returns_row(self, conn):
+        created = create_note(conn, title="x", audio_path="/x")
+        found = get_note(conn, created["id"])
         assert found is not None
         assert found["id"] == created["id"]
         assert found["title"] == "x"
 
-    def test_get_document_unknown_returns_none(self, conn):
-        assert get_document(conn, "no-such-id") is None
+    def test_get_note_unknown_returns_none(self, conn):
+        assert get_note(conn, "no-such-id") is None
 
-    def test_list_documents_empty(self, conn):
-        assert list_documents(conn) == []
+    def test_list_notes_empty(self, conn):
+        assert list_notes(conn) == []
 
-    def test_list_documents_ordered_desc(self, conn):
+    def test_list_notes_ordered_desc(self, conn):
         conn.execute(
-            "INSERT INTO documents (id, title, created_at, status, audio_path) "
+            "INSERT INTO notes (id, title, created_at, status, audio_path) "
             "VALUES (?, ?, ?, ?, ?)",
             ("id-1", "first", "2024-01-01T00:00:00.000Z", "pending", "/1"),
         )
         conn.execute(
-            "INSERT INTO documents (id, title, created_at, status, audio_path) "
+            "INSERT INTO notes (id, title, created_at, status, audio_path) "
             "VALUES (?, ?, ?, ?, ?)",
             ("id-2", "second", "2024-01-02T00:00:00.000Z", "pending", "/2"),
         )
         conn.commit()
-        rows = list_documents(conn)
+        rows = list_notes(conn)
         assert [r["title"] for r in rows] == ["second", "first"]
 
 
-# ── update_document ─────────────────────────────────────────────────────
+# ── update_note ─────────────────────────────────────────────────────
 
 
-class TestUpdateDocument:
+class TestUpdateNote:
     def test_updates_status(self, conn):
-        doc = create_document(conn, title="x")
-        updated = update_document(conn, doc["id"], status="transcribing")
+        doc = create_note(conn, title="x")
+        updated = update_note(conn, doc["id"], status="transcribing")
         assert updated is not None
         assert updated["status"] == "transcribing"
 
     def test_updates_transcript_path_via_camel_case_alias(self, conn):
-        doc = create_document(conn, title="x")
-        updated = update_document(
+        doc = create_note(conn, title="x")
+        updated = update_note(
             conn, doc["id"], transcriptPath="/tmp/transcript.md"
         )
         assert updated["transcriptPath"] == "/tmp/transcript.md"
 
     def test_updates_transcript_path_via_snake_case(self, conn):
-        doc = create_document(conn, title="x")
-        updated = update_document(
+        doc = create_note(conn, title="x")
+        updated = update_note(
             conn, doc["id"], transcript_path="/tmp/transcript.md"
         )
         assert updated["transcriptPath"] == "/tmp/transcript.md"
 
     def test_updates_summary_path(self, conn):
-        doc = create_document(conn, title="x")
-        updated = update_document(conn, doc["id"], summary_path="/tmp/s.md")
+        doc = create_note(conn, title="x")
+        updated = update_note(conn, doc["id"], summary_path="/tmp/s.md")
         assert updated["summaryPath"] == "/tmp/s.md"
 
     def test_ignores_unknown_columns(self, conn):
-        doc = create_document(conn, title="x")
+        doc = create_note(conn, title="x")
         # Should not raise; should not modify anything.
-        updated = update_document(conn, doc["id"], bogus="nope")
+        updated = update_note(conn, doc["id"], bogus="nope")
         assert updated["title"] == "x"
 
     def test_no_fields_returns_current_row(self, conn):
-        doc = create_document(conn, title="x")
-        updated = update_document(conn, doc["id"])
+        doc = create_note(conn, title="x")
+        updated = update_note(conn, doc["id"])
         assert updated is not None
         assert updated["id"] == doc["id"]
 
 
-# ── delete_document ─────────────────────────────────────────────────────
+# ── delete_note ─────────────────────────────────────────────────────
 
 
-class TestDeleteDocument:
+class TestDeleteNote:
     def test_deletes_row(self, conn):
-        doc = create_document(conn, title="x")
-        delete_document(conn, doc["id"])
-        assert get_document(conn, doc["id"]) is None
+        doc = create_note(conn, title="x")
+        delete_note(conn, doc["id"])
+        assert get_note(conn, doc["id"]) is None
 
     def test_delete_audio_removes_file(self, conn, tmp_path):
         audio = tmp_path / "voice.wav"
         audio.write_bytes(b"\x00" * 32)
-        doc = create_document(conn, title="x", audio_path=str(audio))
+        doc = create_note(conn, title="x", audio_path=str(audio))
         assert audio.exists()
-        delete_document(conn, doc["id"], delete_audio=True)
+        delete_note(conn, doc["id"], delete_audio=True)
         assert not audio.exists()
 
     def test_delete_keeps_audio_by_default(self, conn, tmp_path):
         audio = tmp_path / "voice.wav"
         audio.write_bytes(b"\x00" * 32)
-        doc = create_document(conn, title="x", audio_path=str(audio))
-        delete_document(conn, doc["id"])
+        doc = create_note(conn, title="x", audio_path=str(audio))
+        delete_note(conn, doc["id"])
         assert audio.exists()
 
     def test_delete_audio_missing_file_is_safe(self, conn, tmp_path):
         # audio_path recorded but file never existed — must not raise.
-        doc = create_document(
+        doc = create_note(
             conn, title="x", audio_path=str(tmp_path / "nope.wav")
         )
-        delete_document(conn, doc["id"], delete_audio=True)
-        assert get_document(conn, doc["id"]) is None
+        delete_note(conn, doc["id"], delete_audio=True)
+        assert get_note(conn, doc["id"]) is None

@@ -23,12 +23,12 @@ vi.mock('@/api/client', () => ({
       Object.assign(postSseHandlers, handlers)
       return () => {}
     }),
-    getDocument: vi.fn(),
+    getNote: vi.fn(),
     getSummary: vi.fn().mockRejectedValue(Object.assign(new Error('not found'), { status: 404 })),
     getTranscript: vi.fn().mockResolvedValue({ content: '' }),
     getPrompt: vi.fn().mockRejectedValue(Object.assign(new Error('not found'), { status: 404 })),
     listPrompts: vi.fn().mockResolvedValue([]),
-    deleteDocument: vi.fn(),
+    deleteNote: vi.fn(),
   },
 }))
 
@@ -42,7 +42,7 @@ vi.mock('@/hooks/useSSE', async (importOriginal) => {
   }
 })
 
-function renderSummary(documentId = 'doc-1') {
+function renderSummary(noteId = 'doc-1') {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
@@ -50,10 +50,10 @@ function renderSummary(documentId = 'doc-1') {
     qc,
     ...render(
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={[`/documents/${documentId}/summary`]}>
+        <MemoryRouter initialEntries={[`/notes/${noteId}/summary`]}>
           <Routes>
-            <Route path="/documents/:id/summary" element={<Summary />} />
-            <Route path="/documents" element={<div>document list</div>} />
+            <Route path="/notes/:id/summary" element={<Summary />} />
+            <Route path="/notes" element={<div>note list</div>} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -69,7 +69,7 @@ describe('Summary — finalizing state recovery', () => {
 
   afterEach(() => {
     vi.clearAllMocks()
-    api.getDocument.mockReset()
+    api.getNote.mockReset()
     api.getSummary.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
   })
 
@@ -81,7 +81,7 @@ describe('Summary — finalizing state recovery', () => {
     const secondCall = new Promise((r) => { resolveSecond = r })
 
     let callCount = 0
-    api.getDocument.mockImplementation(() => {
+    api.getNote.mockImplementation(() => {
       callCount += 1
       if (callCount === 1) return Promise.resolve({ id: 'doc-1', status: 'finalizing' })
       if (callCount === 2) return secondCall
@@ -114,7 +114,7 @@ describe('Summary — finalizing state recovery', () => {
   })
 
   it('(d) finalizing poll timeout — shows recovery UI and stops hidden fetches', async () => {
-    api.getDocument.mockResolvedValue({ id: 'doc-1', status: 'finalizing' })
+    api.getNote.mockResolvedValue({ id: 'doc-1', status: 'finalizing' })
 
     renderSummary('doc-1')
 
@@ -131,7 +131,7 @@ describe('Summary — finalizing state recovery', () => {
   })
 
   it('(e) finalizing poll 404 — stops retrying and shows recovery UI', async () => {
-    api.getDocument
+    api.getNote
       .mockResolvedValueOnce({ id: 'doc-1', status: 'finalizing' })
       .mockRejectedValue(Object.assign(new Error('gone'), { status: 404 }))
 
@@ -142,16 +142,16 @@ describe('Summary — finalizing state recovery', () => {
     })
 
     await waitFor(() => {
-      expect(screen.getByText(/문서 상태를 다시 확인해 주세요/)).toBeInTheDocument()
+      expect(screen.getByText(/노트 상태를 다시 확인해 주세요/)).toBeInTheDocument()
     })
 
-    const callCount = api.getDocument.mock.calls.length
+    const callCount = api.getNote.mock.calls.length
     await new Promise((r) => setTimeout(r, 50))
-    expect(api.getDocument.mock.calls.length).toBe(callCount)
+    expect(api.getNote.mock.calls.length).toBe(callCount)
   })
 
   it('(b) status=transcription_failed — FailedTranscriptionBlock 표시', async () => {
-    api.getDocument.mockResolvedValue({ id: 'doc-1', status: 'transcription_failed' })
+    api.getNote.mockResolvedValue({ id: 'doc-1', status: 'transcription_failed' })
 
     renderSummary('doc-1')
 
@@ -164,7 +164,7 @@ describe('Summary — finalizing state recovery', () => {
   })
 
   it('(c) status=transcribed — 정상 탭 UI 표시', async () => {
-    api.getDocument.mockResolvedValue({ id: 'doc-1', status: 'transcribed' })
+    api.getNote.mockResolvedValue({ id: 'doc-1', status: 'transcribed' })
 
     renderSummary('doc-1')
 
@@ -179,13 +179,13 @@ describe('Summary — finalizing state recovery', () => {
 describe('useFinalizePoller — 중복 호출 방어', () => {
   afterEach(() => {
     vi.clearAllMocks()
-    api.getDocument.mockReset()
+    api.getNote.mockReset()
     api.getSummary.mockRejectedValue(Object.assign(new Error('not found'), { status: 404 }))
   })
 
   it('finalizing→transcribed 전환 시 폴링이 중단됨', async () => {
     // finalizing → transcribed
-    api.getDocument
+    api.getNote
       .mockResolvedValueOnce({ id: 'doc-1', status: 'finalizing' })
       .mockResolvedValue({ id: 'doc-1', status: 'transcribed' })
 
@@ -194,9 +194,9 @@ describe('useFinalizePoller — 중복 호출 방어', () => {
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={qc}>
-        <MemoryRouter initialEntries={['/documents/doc-1/summary']}>
+        <MemoryRouter initialEntries={['/notes/doc-1/summary']}>
           <Routes>
-            <Route path="/documents/:id/summary" element={<Summary />} />
+            <Route path="/notes/:id/summary" element={<Summary />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>,
@@ -212,10 +212,10 @@ describe('useFinalizePoller — 중복 호출 방어', () => {
       expect(screen.queryByText(/녹음을 처리하고 있어요/)).not.toBeInTheDocument()
     }, { timeout: 3000 })
 
-    // transcribed 이후에는 getDocument 호출이 더 이상 증가하지 않음
-    const callCount = api.getDocument.mock.calls.length
+    // transcribed 이후에는 getNote 호출이 더 이상 증가하지 않음
+    const callCount = api.getNote.mock.calls.length
     // 100ms 대기 후에도 추가 호출 없음 (폴링이 중단됨)
     await new Promise((r) => setTimeout(r, 100))
-    expect(api.getDocument.mock.calls.length).toBe(callCount)
+    expect(api.getNote.mock.calls.length).toBe(callCount)
   })
 })

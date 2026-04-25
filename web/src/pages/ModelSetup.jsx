@@ -79,7 +79,7 @@ export default function ModelSetup() {
           setError(null)
           toast({ description: '모델 다운로드 완료' })
           qc.invalidateQueries({ queryKey: qk.systemInfo() })
-          navigate('/documents')
+          navigate('/notes')
         },
         error: (evt) => {
           const p = evt.payload || {}

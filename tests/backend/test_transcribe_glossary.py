@@ -1,6 +1,6 @@
 """Tests for glossary injection into file-upload transcribe route (locally-4ue).
 
-Verifies that POST /api/documents/{doc_id}/transcribe passes glossary terms
+Verifies that POST /api/notes/{note_id}/transcribe passes glossary terms
 as the `prompt` argument to transcribe.run, and passes None when glossary is empty.
 """
 from __future__ import annotations
@@ -31,7 +31,7 @@ def _fake_run_capture(calls: list):
 def _create_doc_with_audio(client, tmp_home) -> str:
     audio_path = tmp_home / "test.m4a"
     audio_path.write_bytes(b"\x00" * 128)
-    r = client.post("/api/documents", json={"title": "테스트", "audioPath": str(audio_path)})
+    r = client.post("/api/notes", json={"title": "테스트", "audioPath": str(audio_path)})
     assert r.status_code == 201
     return r.json()["id"]
 
@@ -51,8 +51,8 @@ class TestTranscribeGlossaryInjection:
 
         app = create_app()
         with TestClient(app) as c:
-            doc_id = _create_doc_with_audio(c, tmp_home)
-            r = c.post(f"/api/documents/{doc_id}/transcribe")
+            note_id = _create_doc_with_audio(c, tmp_home)
+            r = c.post(f"/api/notes/{note_id}/transcribe")
             assert r.status_code == 200
 
         assert len(calls) == 1
@@ -70,8 +70,8 @@ class TestTranscribeGlossaryInjection:
 
         app = create_app()
         with TestClient(app) as c:
-            doc_id = _create_doc_with_audio(c, tmp_home)
-            r = c.post(f"/api/documents/{doc_id}/transcribe")
+            note_id = _create_doc_with_audio(c, tmp_home)
+            r = c.post(f"/api/notes/{note_id}/transcribe")
             assert r.status_code == 200
 
         assert len(calls) == 1
@@ -92,8 +92,8 @@ class TestTranscribeGlossaryInjection:
 
         app = create_app()
         with TestClient(app) as c:
-            doc_id = _create_doc_with_audio(c, tmp_home)
-            r = c.post(f"/api/documents/{doc_id}/transcribe")
+            note_id = _create_doc_with_audio(c, tmp_home)
+            r = c.post(f"/api/notes/{note_id}/transcribe")
             assert r.status_code == 200
 
         assert len(calls) == 1

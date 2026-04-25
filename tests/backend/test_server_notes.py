@@ -1,4 +1,4 @@
-"""Tests for /api/documents endpoints (B3) and /api/glossary (AC-8)."""
+"""Tests for /api/notes endpoints (B3) and /api/glossary (AC-8)."""
 from __future__ import annotations
 
 import io
@@ -18,35 +18,35 @@ def client(tmp_home):  # noqa: ARG001
         yield c
 
 
-class TestCreateDocument:
-    def test_create_document_no_title(self, client):
-        """B3: POST /api/documents with empty JSON body → 201, title='untitled'."""
-        r = client.post("/api/documents", json={})
+class TestCreateNote:
+    def test_create_note_no_title(self, client):
+        """B3: POST /api/notes with empty JSON body → 201, title='untitled'."""
+        r = client.post("/api/notes", json={})
         assert r.status_code == 201
         body = r.json()
         assert body["title"] == "untitled"
         assert body["status"] == "pending"
         assert body["id"]
 
-    def test_create_document_with_title(self, client):
-        r = client.post("/api/documents", json={"title": "회의 2026"})
+    def test_create_note_with_title(self, client):
+        r = client.post("/api/notes", json={"title": "회의 2026"})
         assert r.status_code == 201
         body = r.json()
         assert body["title"] == "회의 2026"
 
-    def test_create_document_with_audio_path(self, client, tmp_path):
+    def test_create_note_with_audio_path(self, client, tmp_path):
         """JSON payload carries audioPath; accepted verbatim."""
         r = client.post(
-            "/api/documents",
+            "/api/notes",
             json={"title": "x", "audioPath": str(tmp_path / "a.m4a")},
         )
         assert r.status_code == 201
         assert r.json()["audioPath"] == str(tmp_path / "a.m4a")
 
-    def test_create_document_multipart_upload_persists_file(self, client):
+    def test_create_note_multipart_upload_persists_file(self, client):
         payload = b"\x01\x02\x03" * 64
         r = client.post(
-            "/api/documents",
+            "/api/notes",
             data={"title": "upload"},
             files={
                 "file": (
@@ -63,41 +63,41 @@ class TestCreateDocument:
         assert saved.read_bytes() == payload
         assert body["title"] == "upload"
 
-    def test_list_documents(self, client):
-        client.post("/api/documents", json={"title": "first"})
-        client.post("/api/documents", json={"title": "second"})
-        r = client.get("/api/documents")
+    def test_list_notes(self, client):
+        client.post("/api/notes", json={"title": "first"})
+        client.post("/api/notes", json={"title": "second"})
+        r = client.get("/api/notes")
         assert r.status_code == 200
         titles = [d["title"] for d in r.json()]
         assert "first" in titles
         assert "second" in titles
 
 
-class TestDocumentCrud:
-    def test_get_document(self, client):
-        created = client.post("/api/documents", json={"title": "x"}).json()
-        r = client.get(f"/api/documents/{created['id']}")
+class TestNoteCrud:
+    def test_get_note(self, client):
+        created = client.post("/api/notes", json={"title": "x"}).json()
+        r = client.get(f"/api/notes/{created['id']}")
         assert r.status_code == 200
         assert r.json()["id"] == created["id"]
 
-    def test_get_unknown_document_404(self, client):
-        r = client.get("/api/documents/no-such-id")
+    def test_get_unknown_note_404(self, client):
+        r = client.get("/api/notes/no-such-id")
         assert r.status_code == 404
 
-    def test_patch_document(self, client):
-        created = client.post("/api/documents", json={"title": "x"}).json()
+    def test_patch_note(self, client):
+        created = client.post("/api/notes", json={"title": "x"}).json()
         r = client.patch(
-            f"/api/documents/{created['id']}",
+            f"/api/notes/{created['id']}",
             json={"title": "renamed"},
         )
         assert r.status_code == 200
         assert r.json()["title"] == "renamed"
 
-    def test_delete_document(self, client):
-        created = client.post("/api/documents", json={"title": "x"}).json()
-        r = client.delete(f"/api/documents/{created['id']}")
+    def test_delete_note(self, client):
+        created = client.post("/api/notes", json={"title": "x"}).json()
+        r = client.delete(f"/api/notes/{created['id']}")
         assert r.status_code == 204
-        r2 = client.get(f"/api/documents/{created['id']}")
+        r2 = client.get(f"/api/notes/{created['id']}")
         assert r2.status_code == 404
 
 

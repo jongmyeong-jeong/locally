@@ -49,12 +49,12 @@ def _create_doc_and_transcribe(client, tmp_home, monkeypatch, fake_fn):
     monkeypatch.setattr(transcribe_mod, "run", fake_fn)
     audio_path = tmp_home / "test.m4a"
     audio_path.write_bytes(b"\x00" * 128)
-    r = client.post("/api/documents", json={"title": "테스트", "audioPath": str(audio_path)})
+    r = client.post("/api/notes", json={"title": "테스트", "audioPath": str(audio_path)})
     assert r.status_code == 201
-    doc_id = r.json()["id"]
-    r = client.post(f"/api/documents/{doc_id}/transcribe")
+    note_id = r.json()["id"]
+    r = client.post(f"/api/notes/{note_id}/transcribe")
     assert r.status_code == 200
-    return doc_id, r
+    return note_id, r
 
 
 class TestTranscribeFormatterWiring:
@@ -70,7 +70,7 @@ class TestTranscribeFormatterWiring:
 
         app = create_app()
         with TestClient(app) as c:
-            doc_id, r = _create_doc_and_transcribe(c, tmp_home, monkeypatch, _fake)
+            note_id, r = _create_doc_and_transcribe(c, tmp_home, monkeypatch, _fake)
             events = _parse_sse(r.text)
             complete = next(e for e in events if e.get("event") == "complete")
             md = Path(complete["data"]["transcriptPath"]).read_text(encoding="utf-8")
@@ -88,8 +88,8 @@ class TestTranscribeFormatterWiring:
 
         app = create_app()
         with TestClient(app) as c:
-            doc_id, _ = _create_doc_and_transcribe(c, tmp_home, monkeypatch, _fake)
-            r = c.get(f"/api/documents/{doc_id}/transcript")
+            note_id, _ = _create_doc_and_transcribe(c, tmp_home, monkeypatch, _fake)
+            r = c.get(f"/api/notes/{note_id}/transcript")
             assert r.status_code == 200
             body = r.json()
             assert body["content"] == EXPECTED_CONTENT
@@ -107,9 +107,9 @@ class TestTranscribeFormatterWiring:
 
         app = create_app()
         with TestClient(app) as c:
-            doc_id, _ = _create_doc_and_transcribe(c, tmp_home, monkeypatch, _fake)
-            r = c.get(f"/api/documents/{doc_id}")
+            note_id, _ = _create_doc_and_transcribe(c, tmp_home, monkeypatch, _fake)
+            r = c.get(f"/api/notes/{note_id}")
             assert r.status_code == 200
             assert r.json()["status"] == "transcription_failed"
-            r = c.get(f"/api/documents/{doc_id}/transcript")
+            r = c.get(f"/api/notes/{note_id}/transcript")
             assert r.status_code == 404

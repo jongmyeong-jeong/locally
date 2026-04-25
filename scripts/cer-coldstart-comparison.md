@@ -153,7 +153,7 @@ DBPR AI 리더       ← "DBpia AI 리더" 오인식 (정답 불명)
 
 ### 5.3 강의 오디오 전사 결과 (429s, 기존 저장 전사본)
 
-파일: `.locally/workspace/documents/transcripts/2026-04-19-인생에-도움되는-맥북-고오급-터미널-d914932b.md`
+파일: `.locally/workspace/notes/transcripts/2026-04-19-인생에-도움되는-맥북-고오급-터미널-d914932b.md`
 
 - **커버리지**: 0.0s → 428.6s (전체 429s 중 428.6s, 99.9% 커버)
 - **세그먼트 수**: 352개

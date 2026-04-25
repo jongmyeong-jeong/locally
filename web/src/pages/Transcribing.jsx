@@ -28,7 +28,7 @@ export default function Transcribing() {
     if (!id) return
     let disposed = false
     const dispose = api.postSse(
-      `/api/documents/${encodeURIComponent(id)}/transcribe`,
+      `/api/notes/${encodeURIComponent(id)}/transcribe`,
       undefined,
       {
         progress: (evt) => {
@@ -40,10 +40,10 @@ export default function Transcribing() {
         complete: () => {
           if (disposed) return
           setDone(true)
-          qc.invalidateQueries({ queryKey: qk.documents() })
-          qc.invalidateQueries({ queryKey: qk.document(id) })
+          qc.invalidateQueries({ queryKey: qk.notes() })
+          qc.invalidateQueries({ queryKey: qk.note(id) })
           // Auto-start summarize on completion per Phase E brief.
-          navigate(`/documents/${id}/summary`, { replace: true })
+          navigate(`/notes/${id}/summary`, { replace: true })
         },
         error: (evt) => {
           if (disposed) return
@@ -90,7 +90,7 @@ export default function Transcribing() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => navigate('/documents')}
+                  onClick={() => navigate('/notes')}
                 >
                   목록으로
                 </Button>

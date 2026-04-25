@@ -4,19 +4,19 @@
 export const qk = {
   systemInfo: () => ['system', 'info'],
   settings: () => ['settings'],
-  documents: () => ['documents'],
-  document: (id) => ['documents', id],
-  transcript: (id) => ['documents', id, 'transcript'],
-  summary: (id) => ['documents', id, 'summary'],
+  notes: () => ['notes'],
+  note: (id) => ['notes', id],
+  transcript: (id) => ['notes', id, 'transcript'],
+  summary: (id) => ['notes', id, 'summary'],
   glossary: () => ['glossary'],
   prompts: () => ['prompts'],
   prompt: (id) => ['prompts', id],
 }
 
 export const mk = {
-  createDocument: 'createDocument',
-  deleteDocument: 'deleteDocument',
-  updateDocument: 'updateDocument',
+  createNote: 'createNote',
+  deleteNote: 'deleteNote',
+  updateNote: 'updateNote',
   saveGlossary: 'saveGlossary',
   downloadModel: 'downloadModel',
   startRecording: 'startRecording',

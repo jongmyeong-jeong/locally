@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from app import db as db_mod
-from app.db import create_document, get_document, migrate, migrate_stuck_recordings
+from app.db import create_note, get_note, migrate, migrate_stuck_recordings
 
 
 @pytest.fixture(autouse=True)
@@ -36,50 +36,50 @@ def conn(tmp_path):
 
 class TestMigrateStuckRecordings:
     def test_recording_status_transitions_to_transcription_failed(self, conn):
-        doc = create_document(conn, title="t1", status="recording")
+        doc = create_note(conn, title="t1", status="recording")
 
         affected = migrate_stuck_recordings(conn)
 
         assert affected == 1
-        updated = get_document(conn, doc["id"])
+        updated = get_note(conn, doc["id"])
         assert updated["status"] == "transcription_failed"
 
     def test_pending_status_transitions_to_transcription_failed(self, conn):
-        doc = create_document(conn, title="t1", status="pending")
+        doc = create_note(conn, title="t1", status="pending")
 
         affected = migrate_stuck_recordings(conn)
 
         assert affected == 1
-        assert get_document(conn, doc["id"])["status"] == "transcription_failed"
+        assert get_note(conn, doc["id"])["status"] == "transcription_failed"
 
     def test_transcribing_status_is_not_touched(self, conn):
         """AC10 regression: rows actively transcribing must not be touched."""
-        doc = create_document(conn, title="t1", status="transcribing")
+        doc = create_note(conn, title="t1", status="transcribing")
 
         affected = migrate_stuck_recordings(conn)
 
         assert affected == 0
-        assert get_document(conn, doc["id"])["status"] == "transcribing"
+        assert get_note(conn, doc["id"])["status"] == "transcribing"
 
     def test_completed_status_is_not_touched(self, conn):
-        doc = create_document(conn, title="t1", status="completed")
+        doc = create_note(conn, title="t1", status="completed")
 
         migrate_stuck_recordings(conn)
 
-        assert get_document(conn, doc["id"])["status"] == "completed"
+        assert get_note(conn, doc["id"])["status"] == "completed"
 
     def test_transcription_failed_status_is_not_re_touched(self, conn):
         """Already-failed rows must not be double-counted on second call."""
-        doc = create_document(conn, title="t1", status="transcription_failed")
+        doc = create_note(conn, title="t1", status="transcription_failed")
 
         affected = migrate_stuck_recordings(conn)
 
         assert affected == 0
-        assert get_document(conn, doc["id"])["status"] == "transcription_failed"
+        assert get_note(conn, doc["id"])["status"] == "transcription_failed"
 
     def test_idempotent_double_call(self, conn):
         """AC9: calling twice — first returns 1, second returns 0."""
-        create_document(conn, title="t1", status="recording")
+        create_note(conn, title="t1", status="recording")
 
         first = migrate_stuck_recordings(conn)
         second = migrate_stuck_recordings(conn)
@@ -89,14 +89,14 @@ class TestMigrateStuckRecordings:
 
     def test_multiple_stuck_rows_all_transitioned(self, conn):
         """Both 'recording' and 'pending' rows in one DB are all migrated."""
-        create_document(conn, title="r1", status="recording")
-        create_document(conn, title="p1", status="pending")
-        create_document(conn, title="c1", status="completed")
+        create_note(conn, title="r1", status="recording")
+        create_note(conn, title="p1", status="pending")
+        create_note(conn, title="c1", status="completed")
 
         affected = migrate_stuck_recordings(conn)
 
         assert affected == 2
-        docs = db_mod.list_documents(conn)
+        docs = db_mod.list_notes(conn)
         statuses = {d["title"]: d["status"] for d in docs}
         assert statuses["r1"] == "transcription_failed"
         assert statuses["p1"] == "transcription_failed"

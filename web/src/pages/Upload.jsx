@@ -28,17 +28,17 @@ export default function Upload() {
   const [title, setTitle] = useState('')
 
   const createMut = useMutation({
-    mutationKey: [mk.createDocument],
+    mutationKey: [mk.createNote],
     mutationFn: async ({ file, title }) => {
       const form = new FormData()
       form.append('file', file)
       if (title) form.append('title', title)
-      return api.createDocumentMultipart(form)
+      return api.createNoteMultipart(form)
     },
-    onSuccess: (doc) => {
-      qc.invalidateQueries({ queryKey: qk.documents() })
+    onSuccess: (note) => {
+      qc.invalidateQueries({ queryKey: qk.notes() })
       // Transcribing.jsx opens the POST-SSE stream and drives progress.
-      navigate(`/documents/${doc.id}/transcribing`)
+      navigate(`/notes/${note.id}/transcribing`)
     },
     onError: (err) => {
       // AC-5 415 handling: backend returns `{error, ext}`.
@@ -141,7 +141,7 @@ export default function Upload() {
       </div>
 
       <div className="flex justify-end gap-2">
-        <Button variant="outline" onClick={() => navigate('/documents')}>
+        <Button variant="outline" onClick={() => navigate('/notes')}>
           취소
         </Button>
         <Button

@@ -3,7 +3,7 @@ import { Link, Navigate, Route, Routes } from 'react-router-dom'
 import useSystemInfo from '@/hooks/useSystemInfo'
 import { useAppStore } from '@/stores/app'
 
-const DocumentList = lazy(() => import('@/pages/DocumentList'))
+const NoteList = lazy(() => import('@/pages/NoteList'))
 const Upload = lazy(() => import('@/pages/Upload'))
 const Recording = lazy(() => import('@/pages/Recording'))
 const Transcribing = lazy(() => import('@/pages/Transcribing'))
@@ -23,7 +23,7 @@ function NotFound() {
 }
 
 // First-run gate: `/` routes to ModelSetup until a Whisper model is installed,
-// then falls through to DocumentList. Plan §1 AC-3/4 + Phase E landing.
+// then falls through to NoteList. Plan §1 AC-3/4 + Phase E landing.
 function LandingGate() {
   const { data: sysInfo, isLoading } = useSystemInfo()
 
@@ -36,7 +36,7 @@ function LandingGate() {
   }
 
   if (!sysInfo?.modelReady) return <ModelSetup />
-  return <Navigate to="/documents" replace />
+  return <Navigate to="/notes" replace />
 }
 
 function RouteLoading() {
@@ -58,7 +58,7 @@ function Shell({ children }) {
         <header className="border-b">
           <nav className="mx-auto max-w-3xl p-4 flex gap-4 text-sm">
             <Link to="/" className="font-semibold">Locally</Link>
-            <Link to="/documents" className="text-muted-foreground hover:text-foreground">기록</Link>
+            <Link to="/notes" className="text-muted-foreground hover:text-foreground">노트</Link>
             <Link to="/upload" className="text-muted-foreground hover:text-foreground">업로드</Link>
             <Link to="/recording" className="text-muted-foreground hover:text-foreground">녹음</Link>
             <Link to="/glossary" className="text-muted-foreground hover:text-foreground">용어집</Link>
@@ -77,10 +77,10 @@ export default function App() {
       <Suspense fallback={<RouteLoading />}>
         <Routes>
           <Route path="/" element={<LandingGate />} />
-          <Route path="/documents" element={<DocumentList />} />
-          <Route path="/documents/:id" element={<Summary />} />
-          <Route path="/documents/:id/transcribing" element={<Transcribing />} />
-          <Route path="/documents/:id/summary" element={<Summary />} />
+          <Route path="/notes" element={<NoteList />} />
+          <Route path="/notes/:id" element={<Summary />} />
+          <Route path="/notes/:id/transcribing" element={<Transcribing />} />
+          <Route path="/notes/:id/summary" element={<Summary />} />
           <Route path="/upload" element={<Upload />} />
           <Route path="/recording" element={<Recording />} />
           <Route path="/glossary" element={<Glossary />} />

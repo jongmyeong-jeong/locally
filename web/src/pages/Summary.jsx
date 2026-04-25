@@ -64,11 +64,11 @@ function FailedTranscriptionBlock({ id }) {
     if (deleting) return
     setDeleting(true)
     try {
-      await api.deleteDocument(id, { deleteAudio: true })
-      qc.invalidateQueries({ queryKey: qk.documents() })
-      qc.removeQueries({ queryKey: qk.document(id), exact: true })
+      await api.deleteNote(id, { deleteAudio: true })
+      qc.invalidateQueries({ queryKey: qk.notes() })
+      qc.removeQueries({ queryKey: qk.note(id), exact: true })
       toast({ description: '삭제되었습니다' })
-      navigate('/documents')
+      navigate('/notes')
     } catch (err) {
       setDeleting(false)
       toast({
@@ -109,15 +109,15 @@ export default function Summary() {
   const { data: settings } = useSettings()
   const preferredAi = settings?.preferredAi ?? 'auto'
 
-  const documentQ = useQuery({
-    queryKey: qk.document(id),
-    queryFn: () => api.getDocument(id),
+  const noteQ = useQuery({
+    queryKey: qk.note(id),
+    queryFn: () => api.getNote(id),
     enabled: !!id,
     retry: false,
   })
 
-  const isFailed = documentQ.data?.status === 'transcription_failed'
-  const isServerFinalizing = documentQ.data?.status === 'finalizing'
+  const isFailed = noteQ.data?.status === 'transcription_failed'
+  const isServerFinalizing = noteQ.data?.status === 'finalizing'
 
   const disposeSummarizeStream = useCallback(() => {
     if (disposeRef.current) {
@@ -126,24 +126,24 @@ export default function Summary() {
     }
   }, [])
 
-  // 폴링: 서버에서 finalizing 상태인 문서는 transcribed/transcription_failed가 될 때까지 폴링
-  const fetchDocumentForPoll = useCallback(() => api.getDocument(id), [id])
+  // 폴링: 서버에서 finalizing 상태인 노트는 transcribed/transcription_failed가 될 때까지 폴링
+  const fetchNoteForPoll = useCallback(() => api.getNote(id), [id])
   useFinalizePoller({
     enabled: isServerFinalizing && !finalizePollIssue,
-    fetchDocument: fetchDocumentForPoll,
-    onSettled: (doc) => {
+    fetchNote: fetchNoteForPoll,
+    onSettled: (note) => {
       setFinalizePollIssue(null)
-      qc.setQueryData(qk.document(id), doc)
-      qc.invalidateQueries({ queryKey: qk.documents() })
+      qc.setQueryData(qk.note(id), note)
+      qc.invalidateQueries({ queryKey: qk.notes() })
     },
     onTimeout: () => {
       setFinalizePollIssue({
-        message: '처리가 예상보다 오래 걸리고 있어요. 문서 상태를 다시 확인해 주세요.',
+        message: '처리가 예상보다 오래 걸리고 있어요. 노트 상태를 다시 확인해 주세요.',
       })
     },
     onError: () => {
       setFinalizePollIssue({
-        message: '문서 상태를 다시 확인해 주세요.',
+        message: '노트 상태를 다시 확인해 주세요.',
       })
     },
   })
@@ -151,7 +151,7 @@ export default function Summary() {
   const summaryQ = useQuery({
     queryKey: qk.summary(id),
     queryFn: () => api.getSummary(id),
-    enabled: !!id && documentQ.isSuccess && !isServerFinalizing,
+    enabled: !!id && noteQ.isSuccess && !isServerFinalizing,
     retry: false,
   })
 
@@ -166,7 +166,7 @@ export default function Summary() {
   const transcriptQ = useQuery({
     queryKey: qk.transcript(id),
     queryFn: () => api.getTranscript(id),
-    enabled: documentQ.isSuccess && !isServerFinalizing && shouldFetchTranscript,
+    enabled: noteQ.isSuccess && !isServerFinalizing && shouldFetchTranscript,
     retry: false,
   })
 
@@ -218,16 +218,16 @@ export default function Summary() {
     serverPromptRef.current = null
     setActiveTab('summary') // one-shot tab switch on click (AC-5)
     disposeRef.current = api.postSse(
-      `/api/documents/${encodeURIComponent(id)}/summarize`,
+      `/api/notes/${encodeURIComponent(id)}/summarize`,
       { ai: preferredAi, prompt_id: selectedPromptId ?? undefined },
       {
         ai_waiting: (evt) => setAiWaiting(evt.payload?.elapsed_s ?? 0),
         complete: () => {
           disposeSummarizeStream()
           setInProgress(false)
-          qc.invalidateQueries({ queryKey: qk.document(id) })
+          qc.invalidateQueries({ queryKey: qk.note(id) })
           qc.invalidateQueries({ queryKey: qk.summary(id) })
-          qc.invalidateQueries({ queryKey: qk.documents() })
+          qc.invalidateQueries({ queryKey: qk.notes() })
           // Intentionally no setActiveTab — respects user tab choice (AC-6).
         },
         error: (evt) => {
@@ -299,7 +299,7 @@ export default function Summary() {
 
   const onRetryFinalizePoll = () => {
     setFinalizePollIssue(null)
-    qc.invalidateQueries({ queryKey: qk.document(id) })
+    qc.invalidateQueries({ queryKey: qk.note(id) })
   }
 
   return (
@@ -307,7 +307,7 @@ export default function Summary() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-semibold">요약</h1>
         <Button variant="outline" asChild>
-          <Link to="/documents">목록</Link>
+          <Link to="/notes">목록</Link>
         </Button>
       </div>
 

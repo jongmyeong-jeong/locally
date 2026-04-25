@@ -149,36 +149,36 @@ function postSse(path, body, handlers = {}) {
 // Plan §4.2 GET /api/system/info
 const getSystemInfo = () => request('/api/system/info')
 
-// Plan §4.2 Documents
-const listDocuments = () => request('/api/documents')
-const getDocument = (id) => request(`/api/documents/${encodeURIComponent(id)}`)
-const createDocumentJson = (body) =>
-  request('/api/documents', {
+// Plan §4.2 Notes
+const listNotes = () => request('/api/notes')
+const getNote = (id) => request(`/api/notes/${encodeURIComponent(id)}`)
+const createNoteJson = (body) =>
+  request('/api/notes', {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify(body ?? {}),
   })
-const createDocumentMultipart = (formData) =>
-  request('/api/documents', { method: 'POST', body: formData })
-const updateDocument = (id, patch) =>
-  request(`/api/documents/${encodeURIComponent(id)}`, {
+const createNoteMultipart = (formData) =>
+  request('/api/notes', { method: 'POST', body: formData })
+const updateNote = (id, patch) =>
+  request(`/api/notes/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: JSON_HEADERS,
     body: JSON.stringify(patch),
   })
-const deleteDocument = (id, { deleteAudio = false } = {}) =>
+const deleteNote = (id, { deleteAudio = false } = {}) =>
   request(
-    buildUrl(`/api/documents/${encodeURIComponent(id)}`, {
+    buildUrl(`/api/notes/${encodeURIComponent(id)}`, {
       deleteAudio: deleteAudio || undefined,
     }),
     { method: 'DELETE' },
   )
 const getTranscript = (id) =>
-  request(`/api/documents/${encodeURIComponent(id)}/transcript`)
+  request(`/api/notes/${encodeURIComponent(id)}/transcript`)
 const getSummary = (id) =>
-  request(`/api/documents/${encodeURIComponent(id)}/summary`)
-const getPrompt = (docId, promptId = null) => {
-  const path = `/api/documents/${encodeURIComponent(docId)}/prompt`
+  request(`/api/notes/${encodeURIComponent(id)}/summary`)
+const getPrompt = (noteId, promptId = null) => {
+  const path = `/api/notes/${encodeURIComponent(noteId)}/prompt`
   return request(buildUrl(path, { prompt_id: promptId }))
 }
 
@@ -193,26 +193,26 @@ const putGlossary = (terms) =>
 
 // Long-running SSE endpoints (plan §4.2).
 // Transcribe is POST; EventSource only supports GET. We POST to start, then
-// subscribe to the document-scoped event channel exposed by the server.
+// subscribe to the note-scoped event channel exposed by the server.
 const startTranscribe = (id) =>
-  request(`/api/documents/${encodeURIComponent(id)}/transcribe`, {
+  request(`/api/notes/${encodeURIComponent(id)}/transcribe`, {
     method: 'POST',
   })
 const startSummarize = (id, { ai } = {}) =>
-  request(`/api/documents/${encodeURIComponent(id)}/summarize`, {
+  request(`/api/notes/${encodeURIComponent(id)}/summarize`, {
     method: 'POST',
     headers: JSON_HEADERS,
     body: JSON.stringify(ai ? { ai } : {}),
   })
 const cancelJob = (id) =>
-  request(`/api/documents/${encodeURIComponent(id)}/cancel`, {
+  request(`/api/notes/${encodeURIComponent(id)}/cancel`, {
     method: 'POST',
   })
-const subscribeDocumentEvents = (id, handlers) =>
-  sse(`/api/documents/${encodeURIComponent(id)}/events`, handlers)
+const subscribeNoteEvents = (id, handlers) =>
+  sse(`/api/notes/${encodeURIComponent(id)}/events`, handlers)
 
 // Model download is server-sent from POST — server_jobs surfaces the same
-// event stream via the document-events channel in Phase E. Keep the GET-SSE
+// event stream via the note-events channel in Phase E. Keep the GET-SSE
 // subscription helper here for parity; caller triggers download via POST.
 const startModelDownload = (modelId) =>
   request('/api/models/download', {
@@ -304,12 +304,12 @@ export const api = {
   getSystemInfo,
   getSettings,
   patchSettings,
-  listDocuments,
-  getDocument,
-  createDocumentJson,
-  createDocumentMultipart,
-  updateDocument,
-  deleteDocument,
+  listNotes,
+  getNote,
+  createNoteJson,
+  createNoteMultipart,
+  updateNote,
+  deleteNote,
   getTranscript,
   getSummary,
   getPrompt,
@@ -318,7 +318,7 @@ export const api = {
   startTranscribe,
   startSummarize,
   cancelJob,
-  subscribeDocumentEvents,
+  subscribeNoteEvents,
   startModelDownload,
   listJobs,
   listPrompts,

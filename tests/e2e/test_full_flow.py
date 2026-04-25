@@ -40,7 +40,7 @@ def _parse_sse(body: bytes) -> list[dict]:
 
 def _upload_audio(client: TestClient, audio_bytes: bytes, title: str = "e2e test") -> str:
     r = client.post(
-        "/api/documents",
+        "/api/notes",
         data={"title": title},
         files={"file": ("test.m4a", io.BytesIO(audio_bytes), "audio/mp4")},
     )
@@ -88,28 +88,28 @@ def mock_transcribe(monkeypatch):
 
 
 class TestUpload:
-    def test_upload_m4a_creates_document(self, client, tmp_home):
-        doc_id = _upload_audio(client, b"\x00" * 256)
-        r = client.get(f"/api/documents/{doc_id}")
+    def test_upload_m4a_creates_note(self, client, tmp_home):
+        note_id = _upload_audio(client, b"\x00" * 256)
+        r = client.get(f"/api/notes/{note_id}")
         assert r.status_code == 200
         doc = r.json()
-        assert doc["id"] == doc_id
+        assert doc["id"] == note_id
         assert doc["audioPath"] is not None
 
     def test_upload_sets_title(self, client, tmp_home):
-        doc_id = _upload_audio(client, b"\x00" * 128, title="회의록")
-        doc = client.get(f"/api/documents/{doc_id}").json()
+        note_id = _upload_audio(client, b"\x00" * 128, title="회의록")
+        doc = client.get(f"/api/notes/{note_id}").json()
         assert doc["title"] == "회의록"
 
     def test_upload_unsupported_ext_returns_415(self, client, tmp_home):
         r = client.post(
-            "/api/documents",
+            "/api/notes",
             files={"file": ("bad.exe", io.BytesIO(b"MZ"), "application/octet-stream")},
         )
         assert r.status_code == 415
 
     def test_upload_without_file_creates_doc(self, client, tmp_home):
-        r = client.post("/api/documents", json={"title": "no audio"})
+        r = client.post("/api/notes", json={"title": "no audio"})
         assert r.status_code == 201
         assert r.json()["audioPath"] is None
 
@@ -121,9 +121,9 @@ class TestUpload:
 
 class TestTranscribeFlow:
     def test_transcribe_emits_progress_and_complete(self, client, tmp_home, mock_transcribe):
-        doc_id = _upload_audio(client, b"\x00" * 256)
+        note_id = _upload_audio(client, b"\x00" * 256)
 
-        with client.stream("POST", f"/api/documents/{doc_id}/transcribe") as resp:
+        with client.stream("POST", f"/api/notes/{note_id}/transcribe") as resp:
             assert resp.status_code == 200
             body = resp.read()
 
@@ -133,9 +133,9 @@ class TestTranscribeFlow:
         assert "complete" in names
 
     def test_transcribe_complete_has_transcript_path(self, client, tmp_home, mock_transcribe):
-        doc_id = _upload_audio(client, b"\x00" * 256)
+        note_id = _upload_audio(client, b"\x00" * 256)
 
-        with client.stream("POST", f"/api/documents/{doc_id}/transcribe") as resp:
+        with client.stream("POST", f"/api/notes/{note_id}/transcribe") as resp:
             body = resp.read()
 
         events = _parse_sse(body)
@@ -143,28 +143,28 @@ class TestTranscribeFlow:
         assert "transcriptPath" in complete["data"]
 
     def test_transcript_readable_after_transcribe(self, client, tmp_home, mock_transcribe):
-        doc_id = _upload_audio(client, b"\x00" * 256)
+        note_id = _upload_audio(client, b"\x00" * 256)
 
-        with client.stream("POST", f"/api/documents/{doc_id}/transcribe") as resp:
+        with client.stream("POST", f"/api/notes/{note_id}/transcribe") as resp:
             resp.read()
 
-        r = client.get(f"/api/documents/{doc_id}/transcript")
+        r = client.get(f"/api/notes/{note_id}/transcript")
         assert r.status_code == 200
         assert "안녕하세요" in r.json()["content"]
 
     def test_transcribe_without_audio_returns_400(self, client, tmp_home):
-        r = client.post("/api/documents", json={"title": "no audio"})
-        doc_id = r.json()["id"]
-        r2 = client.post(f"/api/documents/{doc_id}/transcribe")
+        r = client.post("/api/notes", json={"title": "no audio"})
+        note_id = r.json()["id"]
+        r2 = client.post(f"/api/notes/{note_id}/transcribe")
         assert r2.status_code == 400
 
-    def test_transcribe_updates_document_status(self, client, tmp_home, mock_transcribe):
-        doc_id = _upload_audio(client, b"\x00" * 256)
+    def test_transcribe_updates_note_status(self, client, tmp_home, mock_transcribe):
+        note_id = _upload_audio(client, b"\x00" * 256)
 
-        with client.stream("POST", f"/api/documents/{doc_id}/transcribe") as resp:
+        with client.stream("POST", f"/api/notes/{note_id}/transcribe") as resp:
             resp.read()
 
-        doc = client.get(f"/api/documents/{doc_id}").json()
+        doc = client.get(f"/api/notes/{note_id}").json()
         assert doc["status"] == "transcribed"
 
 
@@ -175,13 +175,13 @@ class TestTranscribeFlow:
 
 class TestSummarizeFlow:
     def test_summarize_no_ai_emits_prompt_ready(self, client, tmp_home, mock_transcribe):
-        doc_id = _upload_audio(client, b"\x00" * 256)
-        with client.stream("POST", f"/api/documents/{doc_id}/transcribe") as resp:
+        note_id = _upload_audio(client, b"\x00" * 256)
+        with client.stream("POST", f"/api/notes/{note_id}/transcribe") as resp:
             resp.read()
 
         with client.stream(
             "POST",
-            f"/api/documents/{doc_id}/summarize",
+            f"/api/notes/{note_id}/summarize",
             json={"ai": "none"},
         ) as resp:
             assert resp.status_code == 200
@@ -192,13 +192,13 @@ class TestSummarizeFlow:
         assert "prompt_ready" in names
 
     def test_summarize_prompt_ready_contains_transcript(self, client, tmp_home, mock_transcribe):
-        doc_id = _upload_audio(client, b"\x00" * 256)
-        with client.stream("POST", f"/api/documents/{doc_id}/transcribe") as resp:
+        note_id = _upload_audio(client, b"\x00" * 256)
+        with client.stream("POST", f"/api/notes/{note_id}/transcribe") as resp:
             resp.read()
 
         with client.stream(
             "POST",
-            f"/api/documents/{doc_id}/summarize",
+            f"/api/notes/{note_id}/summarize",
             json={"ai": "none"},
         ) as resp:
             body = resp.read()
@@ -208,10 +208,10 @@ class TestSummarizeFlow:
         assert "안녕하세요" in prompt_ready["data"]["transcript"]
 
     def test_summarize_without_transcript_returns_400(self, client, tmp_home):
-        r = client.post("/api/documents", json={"title": "no transcript"})
-        doc_id = r.json()["id"]
+        r = client.post("/api/notes", json={"title": "no transcript"})
+        note_id = r.json()["id"]
         r2 = client.post(
-            f"/api/documents/{doc_id}/summarize",
+            f"/api/notes/{note_id}/summarize",
             json={"ai": "none"},
         )
         assert r2.status_code == 400

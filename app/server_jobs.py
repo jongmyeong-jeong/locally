@@ -3,10 +3,10 @@
 Tracks in-flight SSE jobs (transcribe / summarize / models download) so the
 HTTP layer can:
   - list them   (GET  /api/jobs)
-  - cancel them (POST /api/documents/{id}/cancel) — A2: kill subprocess
-  - proxy their events from a second client (GET /api/documents/{id}/events)
+  - cancel them (POST /api/notes/{id}/cancel) — A2: kill subprocess
+  - proxy their events from a second client (GET /api/notes/{id}/events)
 
-Keyed by document_id for document-bound jobs (transcribe, summarize).
+Keyed by note_id for note-bound jobs (transcribe, summarize).
 Download jobs use the model id as their key.
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ JobStatus = Literal["running", "completed", "error", "cancelled"]
 @dataclass
 class JobHandle:
     job_id: str
-    document_id: str
+    note_id: str
     job_type: JobType
     status: JobStatus = "running"
     started_at: float = field(default_factory=time.monotonic)
@@ -36,43 +36,43 @@ _JOBS: dict[str, JobHandle] = {}
 _LOCK = asyncio.Lock()
 
 
-async def register(document_id: str, job_type: JobType) -> JobHandle:
-    """Register a new job keyed by document_id. Replaces any prior entry."""
+async def register(note_id: str, job_type: JobType) -> JobHandle:
+    """Register a new job keyed by note_id. Replaces any prior entry."""
     async with _LOCK:
         handle = JobHandle(
-            job_id=document_id,
-            document_id=document_id,
+            job_id=note_id,
+            note_id=note_id,
             job_type=job_type,
         )
-        _JOBS[document_id] = handle
+        _JOBS[note_id] = handle
         return handle
 
 
-async def attach_task(document_id: str, task: asyncio.Task) -> None:
+async def attach_task(note_id: str, task: asyncio.Task) -> None:
     async with _LOCK:
-        handle = _JOBS.get(document_id)
+        handle = _JOBS.get(note_id)
         if handle is not None:
             handle.task = task
 
 
 async def attach_subprocess(
-    document_id: str, proc: asyncio.subprocess.Process
+    note_id: str, proc: asyncio.subprocess.Process
 ) -> None:
     """Stash the subprocess so cancel() can kill it (A2)."""
     async with _LOCK:
-        handle = _JOBS.get(document_id)
+        handle = _JOBS.get(note_id)
         if handle is not None:
             handle.subprocess = proc
 
 
-async def set_status(document_id: str, status: JobStatus) -> None:
+async def set_status(note_id: str, status: JobStatus) -> None:
     async with _LOCK:
-        handle = _JOBS.get(document_id)
+        handle = _JOBS.get(note_id)
         if handle is not None:
             handle.status = status
 
 
-async def cancel(document_id: str) -> bool:
+async def cancel(note_id: str) -> bool:
     """Cancel a running job. Returns True if a job was found.
 
     Behavior (A2):
@@ -81,7 +81,7 @@ async def cancel(document_id: str) -> bool:
       - Mark status='cancelled'.
     """
     async with _LOCK:
-        handle = _JOBS.get(document_id)
+        handle = _JOBS.get(note_id)
         if handle is None:
             return False
         handle.cancel_event.set()
@@ -96,14 +96,14 @@ async def cancel(document_id: str) -> bool:
     return True
 
 
-async def get(document_id: str) -> JobHandle | None:
+async def get(note_id: str) -> JobHandle | None:
     async with _LOCK:
-        return _JOBS.get(document_id)
+        return _JOBS.get(note_id)
 
 
-async def unregister(document_id: str) -> None:
+async def unregister(note_id: str) -> None:
     async with _LOCK:
-        _JOBS.pop(document_id, None)
+        _JOBS.pop(note_id, None)
 
 
 async def list_jobs() -> list[dict]:
@@ -112,7 +112,7 @@ async def list_jobs() -> list[dict]:
             {
                 "jobId": h.job_id,
                 "type": h.job_type,
-                "documentId": h.document_id,
+                "noteId": h.note_id,
                 "status": h.status,
             }
             for h in _JOBS.values()

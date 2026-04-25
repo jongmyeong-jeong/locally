@@ -186,9 +186,9 @@ def _append_recording_chunk_sync(
     stream,
     seq: int,
     *,
-    needs_document: bool,
+    needs_note: bool,
 ) -> dict:
-    if needs_document:
+    if needs_note:
         with db_mod.open_db() as conn:
             return recordings_mod.append_chunk_stream(conn, session_id, stream, seq)
     return recordings_mod.append_chunk_stream(None, session_id, stream, seq)
@@ -231,11 +231,11 @@ def get_cached_system_info() -> dict:
         return payload
 
 
-def _get_document_or_404(conn, doc_id: str) -> dict:
-    doc = db_mod.get_document(conn, doc_id)
-    if doc is None:
-        raise HTTPException(status_code=404, detail="document not found")
-    return doc
+def _get_note_or_404(conn, note_id: str) -> dict:
+    note = db_mod.get_note(conn, note_id)
+    if note is None:
+        raise HTTPException(status_code=404, detail="note not found")
+    return note
 
 
 # ---------------------------------------------------------------------------
@@ -273,12 +273,12 @@ def _hf_cache_dir_for(model_id: str) -> Path:
 # ---------------------------------------------------------------------------
 
 
-class CreateDocumentJSON(BaseModel):
+class CreateNoteJSON(BaseModel):
     title: str | None = None
     audioPath: str | None = None
 
 
-class PatchDocumentJSON(BaseModel):
+class PatchNoteJSON(BaseModel):
     title: str | None = None
     status: str | None = None
 
@@ -496,15 +496,15 @@ def create_app() -> FastAPI:
         return _sse_stream(producer)
 
     # ------------------------------------------------------------------
-    # Documents CRUD
+    # Notes CRUD
     # ------------------------------------------------------------------
-    @app.get("/api/documents")
-    def list_documents() -> list[dict]:
+    @app.get("/api/notes")
+    def list_notes() -> list[dict]:
         with db_mod.open_db() as conn:
-            return db_mod.list_documents(conn)
+            return db_mod.list_notes(conn)
 
-    @app.post("/api/documents", status_code=status.HTTP_201_CREATED)
-    async def create_document_endpoint(
+    @app.post("/api/notes", status_code=status.HTTP_201_CREATED)
+    async def create_note_endpoint(
         request: Request,
         file: UploadFile | None = File(default=None),
         title: str | None = Form(default=None),
@@ -550,51 +550,51 @@ def create_app() -> FastAPI:
             audio_path = str(dest)
 
         with db_mod.open_db() as conn:
-            doc = db_mod.create_document(
+            note = db_mod.create_note(
                 conn, title=effective_title, audio_path=audio_path
             )
-        return JSONResponse(status_code=status.HTTP_201_CREATED, content=doc)
+        return JSONResponse(status_code=status.HTTP_201_CREATED, content=note)
 
-    @app.get("/api/documents/{doc_id}")
-    def get_document(doc_id: str) -> dict:
+    @app.get("/api/notes/{note_id}")
+    def get_note(note_id: str) -> dict:
         with db_mod.open_db() as conn:
-            doc = _get_document_or_404(conn, doc_id)
-        return doc
+            note = _get_note_or_404(conn, note_id)
+        return note
 
-    @app.patch("/api/documents/{doc_id}")
-    def patch_document(doc_id: str, body: PatchDocumentJSON) -> dict:
+    @app.patch("/api/notes/{note_id}")
+    def patch_note(note_id: str, body: PatchNoteJSON) -> dict:
         fields = body.model_dump(exclude_none=True)
         with db_mod.open_db() as conn:
-            doc = db_mod.update_document(conn, doc_id, **fields)
-        if doc is None:
-            raise HTTPException(status_code=404, detail="document not found")
-        return doc
+            note = db_mod.update_note(conn, note_id, **fields)
+        if note is None:
+            raise HTTPException(status_code=404, detail="note not found")
+        return note
 
     @app.delete(
-        "/api/documents/{doc_id}", status_code=status.HTTP_204_NO_CONTENT
+        "/api/notes/{note_id}", status_code=status.HTTP_204_NO_CONTENT
     )
-    def delete_document(doc_id: str, deleteAudio: bool = False) -> Response:
+    def delete_note(note_id: str, deleteAudio: bool = False) -> Response:
         with db_mod.open_db() as conn:
-            db_mod.delete_document(conn, doc_id, delete_audio=deleteAudio)
+            db_mod.delete_note(conn, note_id, delete_audio=deleteAudio)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # ------------------------------------------------------------------
     # Transcribe (SSE)
     # ------------------------------------------------------------------
-    @app.post("/api/documents/{doc_id}/transcribe")
-    async def transcribe_document(doc_id: str) -> StreamingResponse:
+    @app.post("/api/notes/{note_id}/transcribe")
+    async def transcribe_note(note_id: str) -> StreamingResponse:
         with db_mod.open_db() as conn:
-            doc = _get_document_or_404(conn, doc_id)
-        if not doc.get("audioPath"):
-            raise HTTPException(status_code=400, detail="document has no audioPath")
+            note = _get_note_or_404(conn, note_id)
+        if not note.get("audioPath"):
+            raise HTTPException(status_code=400, detail="note has no audioPath")
 
-        audio_path = doc["audioPath"]
-        title = doc["title"]
-        await server_jobs.register(doc_id, "transcribe")
+        audio_path = note["audioPath"]
+        title = note["title"]
+        await server_jobs.register(note_id, "transcribe")
 
         async def producer(queue: asyncio.Queue[bytes | None]) -> None:
             loop = asyncio.get_running_loop()
-            handle = await server_jobs.get(doc_id)
+            handle = await server_jobs.get(note_id)
 
             def _progress_cb(payload: dict) -> None:
                 if handle is not None and handle.cancel_event.is_set():
@@ -621,7 +621,7 @@ def create_app() -> FastAPI:
 
             try:
                 with db_mod.open_db() as conn:
-                    db_mod.update_document(conn, doc_id, status="transcribing")
+                    db_mod.update_note(conn, note_id, status="transcribing")
 
                 text, segments = await asyncio.to_thread(_blocking_transcribe)
 
@@ -637,8 +637,8 @@ def create_app() -> FastAPI:
                 if not segments:
                     # AC6(B): 전사 결과 세그먼트가 0개면 transcription_failed로 기록.
                     with db_mod.open_db() as conn:
-                        db_mod.update_document(
-                            conn, doc_id, status="transcription_failed"
+                        db_mod.update_note(
+                            conn, note_id, status="transcription_failed"
                         )
                     await queue.put(
                         _sse_event(
@@ -646,20 +646,20 @@ def create_app() -> FastAPI:
                             {"message": "no segments", "canRetry": False},
                         )
                     )
-                    await server_jobs.set_status(doc_id, "error")
+                    await server_jobs.set_status(note_id, "error")
                     return
 
                 # Write transcript file.
-                basename = paths.audio_basename(title, datetime.now(), doc_id=doc_id)
+                basename = paths.audio_basename(title, datetime.now(), note_id=note_id)
                 out_path = paths.transcripts_dir() / f"{basename}.md"
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 content = transcript_format_mod.format_transcript_markdown(segments)
                 out_path.write_text(content, encoding="utf-8")
 
                 with db_mod.open_db() as conn:
-                    db_mod.update_document(
+                    db_mod.update_note(
                         conn,
-                        doc_id,
+                        note_id,
                         status="transcribed",
                         transcript_path=str(out_path),
                     )
@@ -673,20 +673,20 @@ def create_app() -> FastAPI:
                         },
                     )
                 )
-                await server_jobs.set_status(doc_id, "completed")
+                await server_jobs.set_status(note_id, "completed")
             except Exception as exc:  # noqa: BLE001
                 logger.error(
-                    "transcribe_error", {"doc_id": doc_id, "error": str(exc)}
+                    "transcribe_error", {"note_id": note_id, "error": str(exc)}
                 )
                 await queue.put(
                     _sse_event(
                         "error", {"message": str(exc), "canRetry": True}
                     )
                 )
-                await server_jobs.set_status(doc_id, "error")
+                await server_jobs.set_status(note_id, "error")
                 with db_mod.open_db() as conn:
                     # AC6(C): 전사 중 예외도 transcription_failed로 통일.
-                    db_mod.update_document(conn, doc_id, status="transcription_failed")
+                    db_mod.update_note(conn, note_id, status="transcription_failed")
             finally:
                 await queue.put(None)
 
@@ -695,21 +695,21 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------------
     # Summarize (SSE)
     # ------------------------------------------------------------------
-    @app.post("/api/documents/{doc_id}/summarize")
-    async def summarize_document(
-        doc_id: str,
+    @app.post("/api/notes/{note_id}/summarize")
+    async def summarize_note(
+        note_id: str,
         request: Request,
         body: SummarizeJSON | None = Body(default=None),
     ) -> StreamingResponse:
         requested_ai = (body.ai if body is not None else None) or "auto"
 
         with db_mod.open_db() as conn:
-            doc = _get_document_or_404(conn, doc_id)
-        if doc.get("status") == "summarizing":
-            raise HTTPException(status_code=409, detail="이미 요약 중인 문서입니다")
-        if not doc.get("transcriptPath"):
+            note = _get_note_or_404(conn, note_id)
+        if note.get("status") == "summarizing":
+            raise HTTPException(status_code=409, detail="이미 요약 중인 노트입니다")
+        if not note.get("transcriptPath"):
             raise HTTPException(
-                status_code=400, detail="document has no transcriptPath"
+                status_code=400, detail="note has no transcriptPath"
             )
 
         # F5: prompt_id로 프리셋 선택. 없거나 유효하지 않으면 첫 항목 fallback.
@@ -724,8 +724,8 @@ def create_app() -> FastAPI:
         if selected_template is None and presets:
             selected_template = presets[0]["template"]
 
-        transcript_text = Path(doc["transcriptPath"]).read_text(encoding="utf-8")
-        title = doc["title"]
+        transcript_text = Path(note["transcriptPath"]).read_text(encoding="utf-8")
+        title = note["title"]
         glossary_terms = glossary_mod.load()
         prompt = summarize_mod.build_prompt(
             transcript=transcript_text,
@@ -744,7 +744,7 @@ def create_app() -> FastAPI:
         else:
             ai_info = ai_detect.detect_ai_cli()
 
-        handle = await server_jobs.register(doc_id, "summarize")
+        handle = await server_jobs.register(note_id, "summarize")
 
         async def producer(queue: asyncio.Queue[bytes | None]) -> None:
             # Watch for client disconnect and propagate to cancel_event.
@@ -776,9 +776,9 @@ def create_app() -> FastAPI:
                     )
                 )
                 try:
-                    basename = paths.audio_basename(title, datetime.now(), doc_id=doc_id)
+                    basename = paths.audio_basename(title, datetime.now(), note_id=note_id)
                     summarize_mod.write_outputs(
-                        doc_id=doc_id,
+                        note_id=note_id,
                         slug=basename,
                         summary_md=None,
                         prompt_md=prompt,
@@ -786,9 +786,9 @@ def create_app() -> FastAPI:
                 except Exception as exc:  # noqa: BLE001
                     logger.error(
                         "summarize_prompt_write_error",
-                        {"doc_id": doc_id, "error": str(exc)},
+                        {"note_id": note_id, "error": str(exc)},
                     )
-                await server_jobs.set_status(doc_id, "completed")
+                await server_jobs.set_status(note_id, "completed")
                 await queue.put(None)
                 return
 
@@ -796,11 +796,11 @@ def create_app() -> FastAPI:
                 await queue.put(_sse_event("ai_waiting", {"elapsed_s": elapsed_s}))
 
             def _on_process_started(proc: asyncio.subprocess.Process) -> None:
-                asyncio.create_task(server_jobs.attach_subprocess(doc_id, proc))
+                asyncio.create_task(server_jobs.attach_subprocess(note_id, proc))
 
             try:
                 with db_mod.open_db() as conn:
-                    db_mod.update_document(conn, doc_id, status="summarizing")
+                    db_mod.update_note(conn, note_id, status="summarizing")
 
                 stdout, _proc = await summarize_mod.run_ai(
                     ai_name=ai_info["name"],  # type: ignore[arg-type]
@@ -811,9 +811,9 @@ def create_app() -> FastAPI:
                     on_process_started=_on_process_started,
                 )
 
-                basename = paths.audio_basename(title, datetime.now(), doc_id=doc_id)
+                basename = paths.audio_basename(title, datetime.now(), note_id=note_id)
                 out = summarize_mod.write_outputs(
-                    doc_id=doc_id,
+                    note_id=note_id,
                     slug=basename,
                     summary_md=stdout,
                     prompt_md=prompt,
@@ -821,9 +821,9 @@ def create_app() -> FastAPI:
                 summary_path = out["summary_path"]
 
                 with db_mod.open_db() as conn:
-                    db_mod.update_document(
+                    db_mod.update_note(
                         conn,
-                        doc_id,
+                        note_id,
                         status="completed",
                         summary_path=summary_path,
                     )
@@ -831,26 +831,26 @@ def create_app() -> FastAPI:
                 await queue.put(
                     _sse_event("complete", {"summaryPath": summary_path})
                 )
-                await server_jobs.set_status(doc_id, "completed")
+                await server_jobs.set_status(note_id, "completed")
             except asyncio.CancelledError:
                 await queue.put(
                     _sse_event(
                         "error", {"message": "cancelled", "canRetry": False}
                     )
                 )
-                await server_jobs.set_status(doc_id, "cancelled")
+                await server_jobs.set_status(note_id, "cancelled")
             except Exception as exc:  # noqa: BLE001
                 logger.error(
-                    "summarize_error", {"doc_id": doc_id, "error": str(exc)}
+                    "summarize_error", {"note_id": note_id, "error": str(exc)}
                 )
                 await queue.put(
                     _sse_event(
                         "error", {"message": str(exc), "canRetry": True}
                     )
                 )
-                await server_jobs.set_status(doc_id, "error")
+                await server_jobs.set_status(note_id, "error")
                 with db_mod.open_db() as conn:
-                    db_mod.update_document(conn, doc_id, status="error")
+                    db_mod.update_note(conn, note_id, status="error")
             finally:
                 await queue.put(None)
 
@@ -860,40 +860,40 @@ def create_app() -> FastAPI:
     # Cancel
     # ------------------------------------------------------------------
     @app.post(
-        "/api/documents/{doc_id}/cancel",
+        "/api/notes/{note_id}/cancel",
         status_code=status.HTTP_204_NO_CONTENT,
     )
-    async def cancel_job(doc_id: str) -> Response:
-        await server_jobs.cancel(doc_id)
+    async def cancel_job(note_id: str) -> Response:
+        await server_jobs.cancel(note_id)
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # ------------------------------------------------------------------
     # Transcript / summary fetch
     # ------------------------------------------------------------------
-    @app.get("/api/documents/{doc_id}/transcript")
-    def get_transcript(doc_id: str) -> dict:
+    @app.get("/api/notes/{note_id}/transcript")
+    def get_transcript(note_id: str) -> dict:
         with db_mod.open_db() as conn:
-            doc = _get_document_or_404(conn, doc_id)
-        if not doc.get("transcriptPath"):
+            note = _get_note_or_404(conn, note_id)
+        if not note.get("transcriptPath"):
             raise HTTPException(status_code=404, detail="transcript not found")
-        content = Path(doc["transcriptPath"]).read_text(encoding="utf-8")
+        content = Path(note["transcriptPath"]).read_text(encoding="utf-8")
         return {"content": content, "segments": []}
 
-    @app.get("/api/documents/{doc_id}/summary")
-    def get_summary(doc_id: str) -> dict:
+    @app.get("/api/notes/{note_id}/summary")
+    def get_summary(note_id: str) -> dict:
         with db_mod.open_db() as conn:
-            doc = _get_document_or_404(conn, doc_id)
-        if not doc.get("summaryPath"):
+            note = _get_note_or_404(conn, note_id)
+        if not note.get("summaryPath"):
             raise HTTPException(status_code=404, detail="summary not found")
-        content = Path(doc["summaryPath"]).read_text(encoding="utf-8")
+        content = Path(note["summaryPath"]).read_text(encoding="utf-8")
         return {"content": content}
 
-    @app.get("/api/documents/{doc_id}/prompt")
-    def get_document_prompt(doc_id: str, prompt_id: int | None = None) -> dict:
+    @app.get("/api/notes/{note_id}/prompt")
+    def get_note_prompt(note_id: str, prompt_id: int | None = None) -> dict:
         prompts_mod.ensure_seed()  # 방어
         with db_mod.open_db() as conn:
-            doc = _get_document_or_404(conn, doc_id)
-        if not doc.get("transcriptPath"):
+            note = _get_note_or_404(conn, note_id)
+        if not note.get("transcriptPath"):
             raise HTTPException(status_code=404, detail="transcript not found")
 
         presets = prompts_mod.load()
@@ -905,8 +905,8 @@ def create_app() -> FastAPI:
         if selected_template is None and presets:
             selected_template = presets[0]["template"]
 
-        transcript_text = Path(doc["transcriptPath"]).read_text(encoding="utf-8")
-        title = doc["title"]
+        transcript_text = Path(note["transcriptPath"]).read_text(encoding="utf-8")
+        title = note["title"]
         glossary_terms = glossary_mod.load()
         prompt = summarize_mod.build_prompt(
             transcript=transcript_text,
@@ -921,18 +921,18 @@ def create_app() -> FastAPI:
     # Minimal implementation: confirm there is an active job and stream
     # keep-alives until it completes or is cancelled.
     # ------------------------------------------------------------------
-    @app.get("/api/documents/{doc_id}/events")
-    async def document_events(doc_id: str, request: Request) -> StreamingResponse:
+    @app.get("/api/notes/{note_id}/events")
+    async def note_events(note_id: str, request: Request) -> StreamingResponse:
         async def producer(queue: asyncio.Queue[bytes | None]) -> None:
             while True:
-                handle = await server_jobs.get(doc_id)
+                handle = await server_jobs.get(note_id)
                 if handle is None or handle.status != "running":
                     break
                 if await request.is_disconnected():
                     break
                 await asyncio.sleep(1.0)
             final_status = "completed"
-            h = await server_jobs.get(doc_id)
+            h = await server_jobs.get(note_id)
             if h is not None:
                 final_status = h.status
             await queue.put(
@@ -1073,7 +1073,7 @@ def create_app() -> FastAPI:
         # 6. Create per-session transcription queue and start the worker.
         queue = await transcribe_queue.create_session_queue(
             session_id,
-            session_id,  # document_id not yet known; will be set after seq=0 chunk
+            session_id,  # note_id not yet known; will be set after seq=0 chunk
             model_dir,
             glossary_prompt=glossary_prompt,
         )
@@ -1127,7 +1127,7 @@ def create_app() -> FastAPI:
                     session_id,
                     chunk.file,
                     int(seq),
-                    needs_document=session.document_id is None,
+                    needs_note=session.note_id is None,
                 )
             except recordings_mod.ChunkSeqConflict as exc:
                 return JSONResponse(  # type: ignore[return-value]
@@ -1139,7 +1139,7 @@ def create_app() -> FastAPI:
 
             # -- VAD feed + queue push (only when live state exists). --
             if detector is not None and chunk_temp_path is not None:
-                document_id = result.get("documentId")
+                note_id = result.get("noteId")
                 # Decode per-chunk temp file to PCM for VAD.
                 try:
                     pcm = await asyncio.to_thread(
@@ -1160,13 +1160,13 @@ def create_app() -> FastAPI:
                     async with lock:
                         boundaries = detector.feed(pcm)
 
-                    if boundaries and document_id:
+                    if boundaries and note_id:
                         sq = await transcribe_queue.get_session_queue(session_id)
                         with db_mod.open_db() as conn:
                             for start_ms, end_ms in boundaries:
                                 chunk_seq = _CHUNK_SEQ.get(session_id, 0)
                                 chunk_id = recording_chunks.insert_chunk(
-                                    conn, document_id, chunk_seq, start_ms, end_ms
+                                    conn, note_id, chunk_seq, start_ms, end_ms
                                 )
                                 _CHUNK_SEQ[session_id] = chunk_seq + 1
                                 # TODO(lnv.7): per-chunk temp file is approximate — for
@@ -1175,7 +1175,7 @@ def create_app() -> FastAPI:
                                 # re-extraction (Step 6c failed-range handling) is the safety net.
                                 job = transcribe_queue.ChunkJob(
                                     chunk_id=chunk_id,
-                                    document_id=document_id,
+                                    note_id=note_id,
                                     seq=chunk_seq,
                                     start_ms=start_ms,
                                     end_ms=end_ms,
@@ -1229,13 +1229,13 @@ def create_app() -> FastAPI:
                 except recordings_mod.RecordingTooShortError as exc:
                     # AC6(A): preserve h14 behavior — set transcription_failed.
                     session_obj = recordings_mod.get_session(session_id)
-                    doc_id_short = (
-                        session_obj.document_id if session_obj is not None else None
+                    note_id_short = (
+                        session_obj.note_id if session_obj is not None else None
                     )
-                    if doc_id_short:
+                    if note_id_short:
                         with db_mod.open_db() as conn:
-                            db_mod.update_document(
-                                conn, doc_id_short, status="transcription_failed"
+                            db_mod.update_note(
+                                conn, note_id_short, status="transcription_failed"
                             )
                     await queue.put(
                         _sse_event(
@@ -1257,7 +1257,7 @@ def create_app() -> FastAPI:
                     )
                     return
 
-                document_id: str = result["documentId"]
+                note_id: str = result["noteId"]
                 session_audio_path: str = result["audioPath"]
 
                 # Determine model_dir (same logic as create_recording).
@@ -1315,7 +1315,7 @@ def create_app() -> FastAPI:
                                 chunk_seq = _CHUNK_SEQ.get(session_id, 0)
                                 chunk_id = recording_chunks.insert_chunk(
                                     conn,
-                                    document_id,
+                                    note_id,
                                     chunk_seq,
                                     start_ms,
                                     end_ms,
@@ -1323,7 +1323,7 @@ def create_app() -> FastAPI:
                                 _CHUNK_SEQ[session_id] = chunk_seq + 1
                             job = transcribe_queue.ChunkJob(
                                 chunk_id=chunk_id,
-                                document_id=document_id,
+                                note_id=note_id,
                                 seq=chunk_seq,
                                 start_ms=start_ms,
                                 end_ms=end_ms,
@@ -1383,8 +1383,8 @@ def create_app() -> FastAPI:
                             with db_mod.open_db() as conn:
                                 row = conn.execute(
                                     "SELECT id FROM recording_chunks "
-                                    "WHERE document_id = ? AND start_ms = ? AND end_ms = ?",
-                                    (document_id, fr["start_ms"], fr["end_ms"]),
+                                    "WHERE note_id = ? AND start_ms = ? AND end_ms = ?",
+                                    (note_id, fr["start_ms"], fr["end_ms"]),
                                 ).fetchone()
                                 if row:
                                     recording_chunks.update_chunk_status(
@@ -1393,14 +1393,14 @@ def create_app() -> FastAPI:
 
                 # 5. Assemble transcript from all chunks.
                 with db_mod.open_db() as conn:
-                    all_done = recording_chunks.all_chunks_done(conn, document_id)
-                    chunks = recording_chunks.get_chunks(conn, document_id)
+                    all_done = recording_chunks.all_chunks_done(conn, note_id)
+                    chunks = recording_chunks.get_chunks(conn, note_id)
 
                 if not all_done and chunks:
                     # Some chunks still failed; fall through with what we have.
                     logger.warning(
                         "finalize_chunks_not_all_done",
-                        {"session_id": session_id, "document_id": document_id},
+                        {"session_id": session_id, "note_id": note_id},
                     )
 
                 if chunks:
@@ -1415,19 +1415,19 @@ def create_app() -> FastAPI:
 
                 # Write transcript file.
                 with db_mod.open_db() as conn:
-                    doc_row = db_mod.get_document(conn, document_id)
-                doc_title = doc_row["title"] if doc_row else title
+                    note_row = db_mod.get_note(conn, note_id)
+                note_title = note_row["title"] if note_row else title
                 basename = paths.audio_basename(
-                    doc_title, datetime.now(), doc_id=document_id
+                    note_title, datetime.now(), note_id=note_id
                 )
                 out_path = paths.transcripts_dir() / f"{basename}.md"
                 out_path.parent.mkdir(parents=True, exist_ok=True)
                 out_path.write_text(transcript_text, encoding="utf-8")
 
                 with db_mod.open_db() as conn:
-                    db_mod.update_document(
+                    db_mod.update_note(
                         conn,
-                        document_id,
+                        note_id,
                         status="transcribed",
                         transcript_path=str(out_path),
                     )
@@ -1438,7 +1438,7 @@ def create_app() -> FastAPI:
                         "complete",
                         {
                             "status": "completed",
-                            "documentId": document_id,
+                            "noteId": note_id,
                             "audioPath": session_audio_path,
                             "transcriptPath": str(out_path),
                         },

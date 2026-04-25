@@ -41,7 +41,7 @@ export default function Recording() {
   const seqRef = useRef(0)
   const sessionIdRef = useRef(null)
   const startedAtRef = useRef(null)
-  const documentIdRef = useRef(null)
+  const noteIdRef = useRef(null)
   const timerRef = useRef(null)
   const statusRef = useRef('idle')
   const pendingUploadsRef = useRef(new Set())
@@ -93,7 +93,7 @@ export default function Recording() {
   const uploadChunk = useCallback(async (sessionId, blob, seq) => {
     try {
       const res = await api.postRecordingChunk(sessionId, blob, seq)
-      if (res?.documentId) documentIdRef.current = res.documentId
+      if (res?.noteId) noteIdRef.current = res.noteId
     } catch (err) {
       if (err?.status === 409) {
         // Duplicate seq — backend already has it. Log and skip.
@@ -243,7 +243,7 @@ export default function Recording() {
       resetRecording()
       sessionIdRef.current = null
       startedAtRef.current = null
-      documentIdRef.current = null
+      noteIdRef.current = null
       pendingUploadsRef.current.clear()
       stopInFlightRef.current = false
       setElapsedSec(0)
@@ -256,7 +256,7 @@ export default function Recording() {
       resetRecording()
       sessionIdRef.current = null
       startedAtRef.current = null
-      documentIdRef.current = null
+      noteIdRef.current = null
       pendingUploadsRef.current.clear()
       stopInFlightRef.current = false
       setElapsedSec(0)
@@ -271,7 +271,7 @@ export default function Recording() {
       {
         complete: (evt) => {
           cleanupRefs()
-          navigate(`/documents/${evt.payload.documentId}`)
+          navigate(`/notes/${evt.payload.noteId}`)
         },
         error: (evt) => {
           const errVal = evt.payload?.error
@@ -351,7 +351,7 @@ export default function Recording() {
       if (s) s.getTracks().forEach((t) => t.stop())
       pendingUploadsRef.current.clear()
       stopInFlightRef.current = false
-      documentIdRef.current = null
+      noteIdRef.current = null
     }
   }, [clearTimer])
 
@@ -364,11 +364,11 @@ export default function Recording() {
       // ① in-flight 청크 업로드 완료 대기 (레이스 방지)
       await waitForPendingUploads()
 
-      // ② docId가 있으면 DELETE — 없으면(첫 청크 도달 전) skip
-      const docId = documentIdRef.current
-      if (docId) {
+      // ② noteId가 있으면 DELETE — 없으면(첫 청크 도달 전) skip
+      const noteId = noteIdRef.current
+      if (noteId) {
         try {
-          await api.deleteDocument(docId, { deleteAudio: true })
+          await api.deleteNote(noteId, { deleteAudio: true })
         } catch (err) {
           // best-effort: 네트워크 오류여도 사용자 이탈을 막지 않음
           console.warn('delete failed during leave', err)
@@ -385,7 +385,7 @@ export default function Recording() {
       mediaRecorderRef.current = null
       sessionIdRef.current = null
       startedAtRef.current = null
-      documentIdRef.current = null
+      noteIdRef.current = null
       pendingUploadsRef.current.clear()
       stopInFlightRef.current = false
       setElapsedSec(0)
@@ -416,11 +416,11 @@ export default function Recording() {
     mediaRecorderRef.current = null
     sessionIdRef.current = null
     startedAtRef.current = null
-    documentIdRef.current = null
+    noteIdRef.current = null
     pendingUploadsRef.current.clear()
     setElapsedSec(0)
     resetRecording()
-    navigate('/documents')
+    navigate('/notes')
   }, [stopTracks, clearTimer, resetRecording, navigate])
 
   const isIdle = recording.status === 'idle' || recording.status === 'error'

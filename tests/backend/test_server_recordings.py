@@ -103,7 +103,7 @@ class TestChunkFinalize:
         for seq in range(3):
             r = _upload_chunk(client, sid, seq, b"\x00" * 128)
             assert r.status_code == 200, r.text
-            assert r.json()["documentId"]
+            assert r.json()["noteId"]
 
         # Finalize with a 30s duration (>1s floor) — now returns SSE stream (200).
         r = client.post(
@@ -115,7 +115,7 @@ class TestChunkFinalize:
         complete_events = [e for e in events if e.get("event") == "complete"]
         assert complete_events, f"No 'complete' SSE event found; events={events}"
         body = complete_events[0]["data"]
-        assert body["documentId"]
+        assert body["noteId"]
         assert Path(body["audioPath"]).exists()
 
 
@@ -190,17 +190,17 @@ class TestShortRecording:
         retry = client.post("/api/recordings", json={})
         assert retry.status_code == 201
 
-    def test_finalize_too_short_marks_document_transcription_failed(self, client):
+    def test_finalize_too_short_marks_note_transcription_failed(self, client):
         """AC6(A): duration < 1.0s finalize → DB status = transcription_failed."""
         # 1) Start a recording session.
         sid = client.post("/api/recordings", json={"title": "too short"}).json()["id"]
-        # 2) Upload seq=0 so a document row is created (status='recording').
+        # 2) Upload seq=0 so a note row is created (status='recording').
         chunk_resp = _upload_chunk(client, sid, 0, b"\x00" * 32)
         assert chunk_resp.status_code == 200
-        doc_id = chunk_resp.json()["documentId"]
-        # Confirm document exists with status 'recording'.
-        doc_before = client.get(f"/api/documents/{doc_id}").json()
-        assert doc_before["status"] == "recording"
+        note_id = chunk_resp.json()["noteId"]
+        # Confirm note exists with status 'recording'.
+        note_before = client.get(f"/api/notes/{note_id}").json()
+        assert note_before["status"] == "recording"
         # 3) Finalize with durationSec=0.5 — SSE 200, error event.
         r = client.post(
             f"/api/recordings/{sid}/finalize", json={"durationSec": 0.5}
@@ -210,19 +210,19 @@ class TestShortRecording:
         error_events = [e for e in events if e.get("event") == "error"]
         assert error_events, f"No 'error' SSE event; events={events}"
         assert error_events[0]["data"]["error"] == "recording too short"
-        # 4) Document status must be 'transcription_failed'.
-        doc_after = client.get(f"/api/documents/{doc_id}").json()
-        assert doc_after["status"] == "transcription_failed"
+        # 4) Note status must be 'transcription_failed'.
+        note_after = client.get(f"/api/notes/{note_id}").json()
+        assert note_after["status"] == "transcription_failed"
 
 
-class TestSeq0CreatesDocument:
-    def test_seq0_creates_recording_document(self, client):
-        """N1: seq=0 upload immediately creates a Document row (status='recording')."""
+class TestSeq0CreatesNote:
+    def test_seq0_creates_recording_note(self, client):
+        """N1: seq=0 upload immediately creates a Note row (status='recording')."""
         sid = client.post("/api/recordings", json={"title": "demo"}).json()["id"]
         _upload_chunk(client, sid, 0, b"\x00" * 32)
 
-        # The session now has a document_id; fetch it via list.
-        docs = client.get("/api/documents").json()
+        # The session now has a note_id; fetch it via list.
+        docs = client.get("/api/notes").json()
         demo = [d for d in docs if d["title"] == "demo"]
         assert len(demo) == 1
         assert demo[0]["status"] == "recording"
@@ -290,4 +290,4 @@ class TestStreamingChunkAppend:
 
         body = asyncio.run(endpoint(session["id"], upload, 0))
         assert body["bytes_written"] == 1024 * 1024 + 17
-        assert body["documentId"]
+        assert body["noteId"]

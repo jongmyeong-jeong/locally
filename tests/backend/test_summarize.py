@@ -219,7 +219,7 @@ class TestWriteOutputs:
         t_root = tmp_path / "transcripts"
         s_root = tmp_path / "summaries"
         out = summarize.write_outputs(
-            doc_id="d1",
+            note_id="d1",
             slug="2026-04-17-demo",
             summary_md=None,
             prompt_md="PROMPT",
@@ -235,7 +235,7 @@ class TestWriteOutputs:
         t_root = tmp_path / "transcripts"
         s_root = tmp_path / "summaries"
         out = summarize.write_outputs(
-            doc_id="d1",
+            note_id="d1",
             slug="s",
             summary_md="# X",
             prompt_md="P",

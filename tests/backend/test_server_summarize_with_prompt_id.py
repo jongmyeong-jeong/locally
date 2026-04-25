@@ -1,4 +1,4 @@
-"""F5: POST /api/documents/:id/summarize with prompt_id selects preset template."""
+"""F5: POST /api/notes/:id/summarize with prompt_id selects preset template."""
 from __future__ import annotations
 
 import json
@@ -38,14 +38,14 @@ class TestSummarizeWithPromptId:
         from app import paths
 
         with db_mod.open_db() as conn:
-            doc = db_mod.create_document(conn, title="회의", status="transcribed")
-        doc_id = doc["id"]
+            doc = db_mod.create_note(conn, title="회의", status="transcribed")
+        note_id = doc["id"]
         tx_dir = paths.transcripts_dir()
-        tx_path = tx_dir / f"{doc_id}.md"
+        tx_path = tx_dir / f"{note_id}.md"
         tx_path.write_text(transcript_text, encoding="utf-8")
         with db_mod.open_db() as conn:
-            db_mod.update_document(conn, doc_id, transcript_path=str(tx_path))
-        return doc_id
+            db_mod.update_note(conn, note_id, transcript_path=str(tx_path))
+        return note_id
 
     def test_uses_selected_preset_template(self, tmp_home):
         # Arrange: 두 프리셋, prompt_id로 두 번째 선택
@@ -54,10 +54,10 @@ class TestSummarizeWithPromptId:
             {"id": 2, "name": "Second", "template": "SECOND: {transcript}"},
         ])
         with TestClient(create_app()) as c:
-            doc_id = self._setup_doc(c, tmp_home, transcript_text="HELLO")
+            note_id = self._setup_doc(c, tmp_home, transcript_text="HELLO")
             # ai=none → prompt_ready 이벤트로 prompt 확인 가능
             r = c.post(
-                f"/api/documents/{doc_id}/summarize",
+                f"/api/notes/{note_id}/summarize",
                 json={"ai": "none", "prompt_id": 2},
             )
             assert r.status_code == 200
@@ -71,9 +71,9 @@ class TestSummarizeWithPromptId:
             {"id": 2, "name": "Second", "template": "SECOND: {transcript}"},
         ])
         with TestClient(create_app()) as c:
-            doc_id = self._setup_doc(c, tmp_home, transcript_text="X")
+            note_id = self._setup_doc(c, tmp_home, transcript_text="X")
             r = c.post(
-                f"/api/documents/{doc_id}/summarize",
+                f"/api/notes/{note_id}/summarize",
                 json={"ai": "none", "prompt_id": 999},
             )
             events = _parse_sse(r.text)
@@ -85,9 +85,9 @@ class TestSummarizeWithPromptId:
             {"id": 1, "name": "First", "template": "FIRST: {transcript}"},
         ])
         with TestClient(create_app()) as c:
-            doc_id = self._setup_doc(c, tmp_home)
+            note_id = self._setup_doc(c, tmp_home)
             r = c.post(
-                f"/api/documents/{doc_id}/summarize",
+                f"/api/notes/{note_id}/summarize",
                 json={"ai": "none"},
             )
             events = _parse_sse(r.text)
@@ -98,9 +98,9 @@ class TestSummarizeWithPromptId:
         # prompts.json 파일이 없는 상태에서 summarize 진입 → ensure_seed가 시드 1개 생성
         # 이후 summarize는 시드의 SEED_TEMPLATE으로 진행
         with TestClient(create_app()) as c:
-            doc_id = self._setup_doc(c, tmp_home, transcript_text="HI")
+            note_id = self._setup_doc(c, tmp_home, transcript_text="HI")
             r = c.post(
-                f"/api/documents/{doc_id}/summarize",
+                f"/api/notes/{note_id}/summarize",
                 json={"ai": "none"},
             )
             assert r.status_code == 200
@@ -120,9 +120,9 @@ class TestSummarizeWithPromptId:
             {"id": 2, "name": "Second", "template": "SECOND: {transcript}"},
         ])
         with TestClient(create_app()) as c:
-            doc_id = self._setup_doc(c, tmp_home, transcript_text="HELLO")
+            note_id = self._setup_doc(c, tmp_home, transcript_text="HELLO")
             r = c.post(
-                f"/api/documents/{doc_id}/summarize",
+                f"/api/notes/{note_id}/summarize",
                 json={"ai": "none", "prompt_id": 2},
             )
             assert r.status_code == 200

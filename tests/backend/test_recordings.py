@@ -1,4 +1,4 @@
-"""Tests for app/recordings.py: seq append + dup/gap/short + N1 seq0→Document."""
+"""Tests for app/recordings.py: seq append + dup/gap/short + N1 seq0→Note."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -41,7 +41,7 @@ class TestSeqAppend:
 
         # Finalize with duration_sec=30.0 (> 1s floor).
         out = recordings.finalize(conn, sid, duration_sec=30.0)
-        assert out["documentId"] is not None
+        assert out["noteId"] is not None
         assert Path(out["audioPath"]).exists()
 
     def test_out_of_order_chunks_finalize_when_no_gap(self, conn):
@@ -51,7 +51,7 @@ class TestSeqAppend:
         recordings.append_chunk(conn, sid, b"\x00" * 64, 0)
 
         out = recordings.finalize(conn, sid, duration_sec=30.0)
-        assert out["documentId"] is not None
+        assert out["noteId"] is not None
         assert Path(out["audioPath"]).exists()
 
 
@@ -129,25 +129,25 @@ class TestTryStartSession:
         assert second is None
 
 
-class TestSeq0CreatesDocument:
-    def test_seq0_creates_recording_status_document(self, conn):
-        """N1: append_chunk(seq=0) writes a Document row with status='recording'."""
+class TestSeq0CreatesNote:
+    def test_seq0_creates_recording_status_note(self, conn):
+        """N1: append_chunk(seq=0) writes a Note row with status='recording'."""
         sess = recordings.start_session(title="demo")
         sid = sess["id"]
         r = recordings.append_chunk(conn, sid, b"\x00" * 10, 0)
-        doc_id = r["documentId"]
-        assert doc_id is not None
-        doc = db_mod.get_document(conn, doc_id)
+        note_id = r["noteId"]
+        assert note_id is not None
+        doc = db_mod.get_note(conn, note_id)
         assert doc is not None
         assert doc["status"] == "recording"
         assert doc["title"] == "demo"
 
-    def test_non_zero_seq_does_not_create_document_when_missing_seq0(self, conn):
-        """seq=1 before seq=0 must NOT create a document (it'll error at finalize)."""
+    def test_non_zero_seq_does_not_create_note_when_missing_seq0(self, conn):
+        """seq=1 before seq=0 must NOT create a note (it'll error at finalize)."""
         sess = recordings.start_session()
         sid = sess["id"]
         r = recordings.append_chunk(conn, sid, b"\x00" * 10, 1)
-        assert r["documentId"] is None
+        assert r["noteId"] is None
 
     def test_finalize_updates_status_to_pending(self, conn):
         sess = recordings.start_session(title="x")
@@ -155,7 +155,7 @@ class TestSeq0CreatesDocument:
         recordings.append_chunk(conn, sid, b"\x00" * 10, 0)
         recordings.append_chunk(conn, sid, b"\x00" * 10, 1)
         out = recordings.finalize(conn, sid, duration_sec=20.0)
-        doc = db_mod.get_document(conn, out["documentId"])
+        doc = db_mod.get_note(conn, out["noteId"])
         assert doc["status"] == "pending"
 
 

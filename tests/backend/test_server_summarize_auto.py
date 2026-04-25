@@ -117,22 +117,22 @@ class TestUploadTranscribeSummarize:
 
         app = create_app()
         with TestClient(app) as c:
-            # 1. Create document with audioPath pointing at a fake audio file.
+            # 1. Create note with audioPath pointing at a fake audio file.
             audio_path = tmp_home / "a.m4a"
             audio_path.write_bytes(b"\x00" * 128)
 
             r = c.post(
-                "/api/documents",
+                "/api/notes",
                 json={"title": "회의", "audioPath": str(audio_path)},
             )
             assert r.status_code == 201
             doc = r.json()
-            doc_id = doc["id"]
+            note_id = doc["id"]
             assert doc["title"] == "회의"
             assert doc["status"] == "pending"
 
             # 2. Transcribe.
-            r = c.post(f"/api/documents/{doc_id}/transcribe")
+            r = c.post(f"/api/notes/{note_id}/transcribe")
             assert r.status_code == 200
             events = _parse_sse(r.text)
             progress = [e for e in events if e.get("event") == "progress"]
@@ -147,7 +147,7 @@ class TestUploadTranscribeSummarize:
 
             # 3. Summarize auto.
             r = c.post(
-                f"/api/documents/{doc_id}/summarize",
+                f"/api/notes/{note_id}/summarize",
                 json={"ai": "auto"},
             )
             assert r.status_code == 200

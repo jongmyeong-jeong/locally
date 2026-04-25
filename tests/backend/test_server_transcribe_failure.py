@@ -41,11 +41,11 @@ def _parse_sse(text: str) -> list[dict]:
 
 
 def _create_doc_with_audio(client, tmp_home, title="테스트"):
-    """Create a document row with a fake audio file; return doc_id."""
+    """Create a note row with a fake audio file; return note_id."""
     audio_path = tmp_home / "test.m4a"
     audio_path.write_bytes(b"\x00" * 128)
     r = client.post(
-        "/api/documents",
+        "/api/notes",
         json={"title": title, "audioPath": str(audio_path)},
     )
     assert r.status_code == 201
@@ -66,9 +66,9 @@ class TestTranscribeNoSegments:
 
         app = create_app()
         with TestClient(app) as c:
-            doc_id = _create_doc_with_audio(c, tmp_home)
+            note_id = _create_doc_with_audio(c, tmp_home)
 
-            r = c.post(f"/api/documents/{doc_id}/transcribe")
+            r = c.post(f"/api/notes/{note_id}/transcribe")
             assert r.status_code == 200
 
             # Consume SSE — must contain an 'error' event.
@@ -77,7 +77,7 @@ class TestTranscribeNoSegments:
             assert len(error_events) >= 1
 
             # DB status must be transcription_failed after SSE is consumed.
-            doc = c.get(f"/api/documents/{doc_id}").json()
+            doc = c.get(f"/api/notes/{note_id}").json()
             assert doc["status"] == "transcription_failed"
 
 
@@ -95,9 +95,9 @@ class TestTranscribeException:
 
         app = create_app()
         with TestClient(app) as c:
-            doc_id = _create_doc_with_audio(c, tmp_home)
+            note_id = _create_doc_with_audio(c, tmp_home)
 
-            r = c.post(f"/api/documents/{doc_id}/transcribe")
+            r = c.post(f"/api/notes/{note_id}/transcribe")
             assert r.status_code == 200
 
             # SSE must contain an 'error' event with the exception message.
@@ -107,5 +107,5 @@ class TestTranscribeException:
             assert "boom" in str(error_events[0].get("data", ""))
 
             # DB status must be transcription_failed.
-            doc = c.get(f"/api/documents/{doc_id}").json()
+            doc = c.get(f"/api/notes/{note_id}").json()
             assert doc["status"] == "transcription_failed"

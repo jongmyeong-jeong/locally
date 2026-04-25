@@ -150,7 +150,7 @@ class TestPathResolvers:
         assert root == _tmp_home / ".locally"
 
     def test_subdirs_exist(self, _tmp_home):
-        for fn in (mod.documents_dir, mod.audio_dir, mod.logs_dir, mod.models_dir):
+        for fn in (mod.notes_dir, mod.audio_dir, mod.logs_dir, mod.models_dir):
             p = fn()
             assert p.exists()
             assert p.is_dir()
