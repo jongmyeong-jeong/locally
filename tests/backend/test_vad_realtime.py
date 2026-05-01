@@ -63,7 +63,7 @@ class TestChunkBoundaryDetector:
         boundaries = det.feed(audio)
 
         assert len(boundaries) >= 1, "Expected at least one boundary for 31 s of speech"
-        first_start, first_end = boundaries[0]
+        first_start, first_end, _pcm = boundaries[0]
         assert first_start == 0, f"First boundary start should be 0, got {first_start}"
         assert abs(first_end - 30_000) < 50, (
             f"First boundary end should be ~30000 ms, got {first_end}"
@@ -90,7 +90,7 @@ class TestChunkBoundaryDetector:
         boundaries = det.feed(audio)
 
         assert len(boundaries) >= 1, f"Expected at least one boundary, got {boundaries}"
-        start_ms, end_ms = boundaries[0]
+        start_ms, end_ms, _pcm = boundaries[0]
         assert start_ms == 0, f"Boundary should start at 0, got {start_ms}"
         # Tolerance ±200 ms to absorb frame-quantization (HOP_LEN=400 samples = 25 ms)
         assert abs(end_ms - 6_000) < 200, (

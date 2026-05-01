@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useBlocker, useNavigate } from 'react-router-dom'
 
-import api from '@/api/client'
+import api, { transcriptStream } from '@/api/client'
 import { useAppStore } from '@/stores/app'
 import { useToast } from '@/hooks/use-toast'
 import { Button } from '@/components/ui/button'
@@ -9,6 +9,7 @@ import { Card, CardContent } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import RecordingWaveform from '@/components/RecordingWaveform'
 import RecordingGuardModal from '@/components/RecordingGuardModal'
+import RealtimeTranscript from '@/components/RealtimeTranscript'
 
 // Plan §4.2 + AC-7. Chunk cadence is 10s; MediaRecorder mimeType is fixed.
 const CHUNK_MS = 10000
@@ -34,6 +35,7 @@ export default function Recording() {
   const [stream, setStream] = useState(null)
   const [elapsedSec, setElapsedSec] = useState(0)
   const [leaving, setLeaving] = useState(false)
+  const [lines, setLines] = useState([])
 
   // Refs hold non-React lifecycle state. `seqRef` is monotonically ascending.
   const mediaRecorderRef = useRef(null)
@@ -46,6 +48,7 @@ export default function Recording() {
   const statusRef = useRef('idle')
   const pendingUploadsRef = useRef(new Set())
   const stopInFlightRef = useRef(false)
+  const esRef = useRef(null)
 
   // Keep a ref mirror of status so async callbacks (ondataavailable, beforeunload)
   // see the latest value without stale closures.
@@ -202,6 +205,20 @@ export default function Recording() {
     })
 
     mr.start(CHUNK_MS)
+
+    // Open transcript SSE stream for real-time display (Phase 3).
+    // Backend endpoint is added in Phase 2; connection is established here.
+    esRef.current = transcriptStream(session.id, {
+      onChunk: (data) => {
+        setLines((prev) => [...prev, data].slice(-4))
+      },
+      onEnd: () => {
+        if (esRef.current) {
+          esRef.current()
+          esRef.current = null
+        }
+      },
+    })
   }, [title, toast, setRecording, uploadChunk, clearTimer, trackPendingUpload])
 
   const handleStop = useCallback(async () => {
@@ -213,6 +230,13 @@ export default function Recording() {
     stopInFlightRef.current = true
 
     clearTimer()
+
+    // Close transcript SSE stream on stop.
+    if (esRef.current) {
+      esRef.current()
+      esRef.current = null
+    }
+    setLines([])
 
     // Wait for MediaRecorder to flush remaining data via onstop.
     const stopped = new Promise((resolve) => {
@@ -355,6 +379,11 @@ export default function Recording() {
       pendingUploadsRef.current.clear()
       stopInFlightRef.current = false
       noteIdRef.current = null
+      // Close transcript SSE stream to prevent memory leaks on unmount.
+      if (esRef.current) {
+        esRef.current()
+        esRef.current = null
+      }
     }
   }, [clearTimer])
 
@@ -460,6 +489,8 @@ export default function Recording() {
           </div>
 
           <RecordingWaveform stream={isRecording ? stream : null} />
+
+          <RealtimeTranscript lines={lines} />
 
           <div className="flex gap-2">
             {!isRecording ? (

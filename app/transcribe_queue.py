@@ -39,10 +39,12 @@ class SessionTranscribeQueue:
 
     def __init__(
         self,
+        session_id: str,
         note_id: str,
         model_dir: str | None,
         glossary_prompt: str | None,
     ) -> None:
+        self._session_id = session_id
         self._note_id = note_id
         self._model_dir = model_dir
         self._glossary_prompt = glossary_prompt
@@ -160,6 +162,17 @@ class SessionTranscribeQueue:
             # Best-effort temp file cleanup.
             Path(job.audio_path).unlink(missing_ok=True)
             self._decrement_active()
+            # Push chunk_transcribed event to SSE queue if a callback is registered.
+            cb = _on_chunk_transcribed
+            if cb is not None:
+                try:
+                    await cb(self._session_id, job.seq, job.start_ms, job.end_ms, text)
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "chunk_transcribed callback error for session=%s seq=%d",
+                        self._session_id,
+                        job.seq,
+                    )
             return
 
         # 3b. Failure (TranscriptionError or empty text) — check retry_count.
@@ -216,6 +229,21 @@ class SessionTranscribeQueue:
 
 
 # ---------------------------------------------------------------------------
+# Module-level chunk_transcribed callback
+# ---------------------------------------------------------------------------
+# server.py registers a coroutine callback here so transcribe_queue can push
+# chunk_transcribed events without creating a circular import.
+# Signature: async (session_id: str, seq: int, start_ms: int, end_ms: int, text: str) -> None
+_on_chunk_transcribed = None
+
+
+def register_chunk_transcribed_callback(cb) -> None:
+    """Register a coroutine callback invoked after each successful chunk transcription."""
+    global _on_chunk_transcribed
+    _on_chunk_transcribed = cb
+
+
+# ---------------------------------------------------------------------------
 # Module-level registry
 # ---------------------------------------------------------------------------
 
@@ -244,7 +272,7 @@ async def create_session_queue(
     async with lock:
         if session_id in _QUEUES:
             raise ValueError(f"Session queue already exists for session_id={session_id!r}")
-        q = SessionTranscribeQueue(note_id, model_dir, glossary_prompt)
+        q = SessionTranscribeQueue(session_id, note_id, model_dir, glossary_prompt)
         _QUEUES[session_id] = q
         return q
 

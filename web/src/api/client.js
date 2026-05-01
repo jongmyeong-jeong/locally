@@ -297,6 +297,42 @@ const finalizeRecording = (id, body = {}, handlers = undefined) => {
   })
 }
 
+// Transcript SSE helper for real-time transcription display (Phase 3).
+// Opens a GET EventSource to the per-recording transcript-stream endpoint.
+// handlers: { onChunk(data), onEnd(data), onError?(e) }
+// Returns a dispose function: () => es.close()
+export function transcriptStream(recordingId, handlers = {}) {
+  const es = new EventSource(
+    `/api/recordings/${encodeURIComponent(recordingId)}/transcript-stream`,
+  )
+  es.addEventListener('chunk_transcribed', (ev) => {
+    if (typeof handlers.onChunk === 'function') {
+      let data
+      try {
+        data = JSON.parse(ev.data)
+      } catch {
+        data = ev.data
+      }
+      handlers.onChunk(data)
+    }
+  })
+  es.addEventListener('stream_end', (ev) => {
+    if (typeof handlers.onEnd === 'function') {
+      let data
+      try {
+        data = JSON.parse(ev.data)
+      } catch {
+        data = ev.data
+      }
+      handlers.onEnd(data)
+    }
+  })
+  es.onerror = (e) => {
+    if (typeof handlers.onError === 'function') handlers.onError(e)
+  }
+  return () => es.close()
+}
+
 export const api = {
   request,
   sse,

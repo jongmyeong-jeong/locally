@@ -62,15 +62,16 @@ class ChunkBoundaryDetector:
     # Public API
     # ------------------------------------------------------------------
 
-    def feed(self, pcm_chunk: np.ndarray) -> list[tuple[int, int]]:
+    def feed(self, pcm_chunk: np.ndarray) -> list[tuple[int, int, np.ndarray]]:
         """Append PCM samples (float32 mono @ 16 kHz).
 
-        Returns a list of completed (start_ms, end_ms) boundaries (may be empty).
-        Multiple boundaries can be returned when the fed audio spans several
-        silence or max-duration events.
+        Returns a list of completed (start_ms, end_ms, pcm_slice) boundaries
+        (may be empty).  Multiple boundaries can be returned when the fed audio
+        spans several silence or max-duration events.  *pcm_slice* is a copy of
+        the emitted PCM samples suitable for direct WAV export.
         """
         self._buffer = np.concatenate((self._buffer, pcm_chunk.astype(np.float32)))
-        boundaries: list[tuple[int, int]] = []
+        boundaries: list[tuple[int, int, np.ndarray]] = []
 
         while True:
             boundary = self._try_emit()
@@ -102,7 +103,7 @@ class ChunkBoundaryDetector:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _try_emit(self) -> tuple[int, int] | None:
+    def _try_emit(self) -> tuple[int, int, np.ndarray] | None:
         """Check buffer for an emit condition; return boundary or None."""
         total_ms = self.accumulated_ms
 
@@ -118,15 +119,21 @@ class ChunkBoundaryDetector:
 
         return None
 
-    def _emit_at_ms(self, offset_ms: int) -> tuple[int, int]:
-        """Emit a boundary at *offset_ms* from chunk start; trim buffer."""
+    def _emit_at_ms(self, offset_ms: int) -> tuple[int, int, np.ndarray]:
+        """Emit a boundary at *offset_ms* from chunk start; trim buffer.
+
+        Returns ``(start_ms, end_ms, pcm_slice)`` where *pcm_slice* is a copy
+        of the emitted samples (captured before the buffer is trimmed).
+        """
         cut = min(_ms_to_samples(offset_ms), self._buffer.size)
         start_ms = self._chunk_start_ms
         end_ms = start_ms + _samples_to_ms(cut)
+        # Capture slice BEFORE trimming the buffer.
+        pcm_slice = self._buffer[:cut].copy()
         # Keep everything after the cut point for the next chunk.
         self._buffer = self._buffer[cut:]
         self._chunk_start_ms = end_ms
-        return (start_ms, end_ms)
+        return (start_ms, end_ms, pcm_slice)
 
     def _find_silence_trigger(self) -> int | None:
         """Return end-of-speech offset (ms) if a qualifying silence run exists.

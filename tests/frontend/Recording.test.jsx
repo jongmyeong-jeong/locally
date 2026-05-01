@@ -15,6 +15,7 @@ const { apiMock } = vi.hoisted(() => ({
 
 vi.mock('@/api/client', () => ({
   default: apiMock,
+  transcriptStream: vi.fn(() => () => {}),
 }))
 
 vi.mock('@/hooks/use-toast', () => ({

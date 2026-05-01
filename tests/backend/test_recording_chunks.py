@@ -153,6 +153,7 @@ class TestSessionTranscribeQueueRetrySemantics:
 
         async def _run():
             q = transcribe_queue.SessionTranscribeQueue(
+                session_id=did,
                 note_id=did,
                 model_dir=None,
                 glossary_prompt=None,

@@ -88,6 +88,43 @@ _VAD_LOCKS: dict[str, asyncio.Lock] = {}
 # Boundary-chunk seq counter per session (for recording_chunks.insert_chunk).
 _CHUNK_SEQ: dict[str, int] = {}
 
+# ---------------------------------------------------------------------------
+# Per-session SSE queues for transcript-stream channel
+# ---------------------------------------------------------------------------
+_TRANSCRIPT_SSE_QUEUES: dict[str, asyncio.Queue[bytes | None]] = {}
+
+
+def _register_transcript_queue(session_id: str) -> "asyncio.Queue[bytes | None]":
+    """Create and register a new SSE queue for the given session."""
+    q: asyncio.Queue[bytes | None] = asyncio.Queue()
+    _TRANSCRIPT_SSE_QUEUES[session_id] = q
+    return q
+
+
+def _remove_transcript_queue(session_id: str) -> None:
+    """Remove the SSE queue for the given session (idempotent)."""
+    _TRANSCRIPT_SSE_QUEUES.pop(session_id, None)
+
+
+async def _push_chunk_transcribed(
+    session_id: str, seq: int, start_ms: int, end_ms: int, text: str
+) -> None:
+    """Push a chunk_transcribed SSE event to the per-session queue, if registered."""
+    q = _TRANSCRIPT_SSE_QUEUES.get(session_id)
+    if q is None:
+        return
+    await q.put(_sse_event("chunk_transcribed", {
+        "seq": seq,
+        "startMs": start_ms,
+        "endMs": end_ms,
+        "text": text,
+    }))
+
+
+# Register the callback with transcribe_queue so it can push events without
+# creating a circular import.
+transcribe_queue.register_chunk_transcribed_callback(_push_chunk_transcribed)
+
 
 def _any_model_ready() -> bool:
     """Return True when at least one model is downloaded and ready."""
@@ -1161,29 +1198,48 @@ def create_app() -> FastAPI:
                         boundaries = detector.feed(pcm)
 
                     if boundaries and note_id:
+                        import tempfile
+
+                        import numpy as np
+                        import scipy.io.wavfile
+
                         sq = await transcribe_queue.get_session_queue(session_id)
                         with db_mod.open_db() as conn:
-                            for start_ms, end_ms in boundaries:
+                            for start_ms, end_ms, pcm_slice in boundaries:
                                 chunk_seq = _CHUNK_SEQ.get(session_id, 0)
                                 chunk_id = recording_chunks.insert_chunk(
                                     conn, note_id, chunk_seq, start_ms, end_ms
                                 )
                                 _CHUNK_SEQ[session_id] = chunk_seq + 1
-                                # TODO(lnv.7): per-chunk temp file is approximate — for
-                                # boundaries spanning multiple browser chunks, the worker
-                                # may transcribe only this chunk's audio. The finalize-path
-                                # re-extraction (Step 6c failed-range handling) is the safety net.
+                                # Write VAD PCM slice to a per-boundary WAV temp file.
+                                # This replaces the approximate webm-box audio path so that
+                                # boundaries spanning multiple browser chunks are captured fully.
+                                wav_filename = (
+                                    Path(tempfile.gettempdir())
+                                    / f"{session_id}_vad_{chunk_seq}.wav"
+                                )
+                                pcm_int16 = np.clip(
+                                    pcm_slice * 32767, -32768, 32767
+                                ).astype(np.int16)
+                                scipy.io.wavfile.write(str(wav_filename), 16000, pcm_int16)
+                                logger.debug(
+                                    "vad_emit session=%s seq=%d boundary=(%dms, %dms) wav=%s",
+                                    session_id,
+                                    chunk_seq,
+                                    start_ms,
+                                    end_ms,
+                                    wav_filename.name,
+                                )
                                 job = transcribe_queue.ChunkJob(
                                     chunk_id=chunk_id,
                                     note_id=note_id,
                                     seq=chunk_seq,
                                     start_ms=start_ms,
                                     end_ms=end_ms,
-                                    audio_path=str(chunk_temp_path),
+                                    audio_path=str(wav_filename),
                                 )
                                 if sq is not None:
                                     await sq.push(job)
-                                    keep_chunk_temp = True
 
             return result
         finally:
@@ -1465,7 +1521,13 @@ def create_app() -> FastAPI:
                 )
 
             finally:
-                # 7. Remove session queue and clean up live state regardless of outcome.
+                # 7. Notify transcript-stream SSE clients before removing queues.
+                _tsq = _TRANSCRIPT_SSE_QUEUES.get(session_id)
+                if _tsq is not None:
+                    await _tsq.put(_sse_event("stream_end", {"reason": "finalized"}))
+                    await _tsq.put(None)  # sentinel to close the SSE generator
+                _remove_transcript_queue(session_id)
+                # 8. Remove session queue and clean up live state regardless of outcome.
                 await transcribe_queue.remove_session_queue(session_id)
                 _cleanup_session_live_state(session_id)
                 recordings_mod.close_session(session_id)
@@ -1477,6 +1539,26 @@ def create_app() -> FastAPI:
                     pass
 
         return _sse_stream(producer)
+
+    # ------------------------------------------------------------------
+    # Transcript stream (realtime SSE — Phase 2)
+    # ------------------------------------------------------------------
+    @app.get("/api/recordings/{session_id}/transcript-stream")
+    async def transcript_stream(session_id: str) -> StreamingResponse:
+        """SSE channel that pushes chunk_transcribed / stream_end events."""
+        sse_queue = _register_transcript_queue(session_id)
+
+        async def _producer(queue: asyncio.Queue[bytes | None]) -> None:
+            try:
+                async for chunk in _merge_with_keepalive(sse_queue):
+                    await queue.put(chunk)
+            except asyncio.CancelledError:
+                _remove_transcript_queue(session_id)
+                raise
+            finally:
+                await queue.put(None)
+
+        return _sse_stream(_producer)
 
     # ------------------------------------------------------------------
     # Jobs list
