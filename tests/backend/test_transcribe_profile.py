@@ -59,34 +59,33 @@ class TestCT2ProfileThresholds:
         transcribe_mod.run(**kwargs)
 
     def test_run_profile_file_uses_file_thresholds(self, monkeypatch, tmp_path):
-        """profile='file' → no_speech_threshold=0.85, hallucination_silence_threshold=1.5."""
+        """profile='file' → no_speech_threshold=0.6, hallucination_silence_threshold=2.0."""
         captured: dict = {}
         self._run_ct2(monkeypatch, tmp_path, "file", captured)
         kw = captured["kwargs"]
-        assert kw["no_speech_threshold"] == 0.85
-        assert kw["hallucination_silence_threshold"] == 1.5
+        assert kw["no_speech_threshold"] == 0.6
+        assert kw["hallucination_silence_threshold"] == 2.0
 
     def test_run_profile_chunk_uses_chunk_thresholds(self, monkeypatch, tmp_path):
-        """profile='chunk' → no_speech_threshold=0.90, hallucination_silence_threshold=3.0."""
+        """profile='chunk' → no_speech_threshold=0.6, hallucination_silence_threshold=2.0."""
         captured: dict = {}
         self._run_ct2(monkeypatch, tmp_path, "chunk", captured)
         kw = captured["kwargs"]
-        assert kw["no_speech_threshold"] == 0.90
-        assert kw["hallucination_silence_threshold"] == 3.0
+        assert kw["no_speech_threshold"] == 0.6
+        assert kw["hallucination_silence_threshold"] == 2.0
 
     def test_run_no_profile_arg_defaults_to_file(self, monkeypatch, tmp_path):
         """Calling run() without profile arg → same as profile='file' (backward-compat)."""
         captured: dict = {}
         self._run_ct2(monkeypatch, tmp_path, None, captured)
         kw = captured["kwargs"]
-        assert kw["no_speech_threshold"] == 0.85
-        assert kw["hallucination_silence_threshold"] == 1.5
+        assert kw["no_speech_threshold"] == 0.6
+        assert kw["hallucination_silence_threshold"] == 2.0
 
     def test_module_globals_unchanged_between_calls(self, monkeypatch, tmp_path):
-        """Module-level _NO_SPEECH_THRESHOLD / _HALLUCINATION_SILENCE_THRESHOLD are not mutated."""
+        """Module-level _HALLUCINATION_SILENCE_THRESHOLD is not mutated by run()."""
         from app import transcribe as transcribe_mod
 
-        original_nst = transcribe_mod._NO_SPEECH_THRESHOLD
         original_hst = transcribe_mod._HALLUCINATION_SILENCE_THRESHOLD
 
         captured1: dict = {}
@@ -95,8 +94,6 @@ class TestCT2ProfileThresholds:
         captured2: dict = {}
         self._run_ct2(monkeypatch, tmp_path, "file", captured2)
 
-        # Constants must be unchanged after both calls.
-        assert transcribe_mod._NO_SPEECH_THRESHOLD == original_nst
         assert transcribe_mod._HALLUCINATION_SILENCE_THRESHOLD == original_hst
 
     def test_ct2_chunk_profile_passes_both_thresholds(self, monkeypatch, tmp_path):
@@ -106,8 +103,8 @@ class TestCT2ProfileThresholds:
         kw = captured["kwargs"]
         assert "no_speech_threshold" in kw
         assert "hallucination_silence_threshold" in kw
-        assert kw["no_speech_threshold"] == 0.90
-        assert kw["hallucination_silence_threshold"] == 3.0
+        assert kw["no_speech_threshold"] == 0.6
+        assert kw["hallucination_silence_threshold"] == 2.0
 
 
 class TestMLXProfileAsymmetry:
@@ -170,10 +167,10 @@ class TestMLXProfileAsymmetry:
         # The asymmetry: MLX does NOT pass hallucination_silence_threshold.
         assert "--hallucination-silence-threshold" not in captured_cmd
 
-        # --no-speech-threshold must be present with the chunk value (0.9).
+        # --no-speech-threshold must be present with the chunk value (0.6).
         assert "--no-speech-threshold" in captured_cmd
         idx = captured_cmd.index("--no-speech-threshold")
         nst_value = captured_cmd[idx + 1]
-        assert float(nst_value) == pytest.approx(0.90, abs=1e-6), (
-            f"Expected 0.90 but got {nst_value!r}"
+        assert float(nst_value) == pytest.approx(0.6, abs=1e-6), (
+            f"Expected 0.6 but got {nst_value!r}"
         )

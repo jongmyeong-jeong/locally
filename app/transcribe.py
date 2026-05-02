@@ -25,15 +25,33 @@ from app.transcribe_parser_mlx import parse_segment_line
 _MODEL = None
 _MODEL_LOCK = threading.Lock()
 
-# Hallucination mitigation thresholds (회의실 잡음/에코 환경)
-_NO_SPEECH_THRESHOLD = 0.85
-_LOGPROB_THRESHOLD = -0.8
-_COMPRESSION_RATIO_THRESHOLD = 2.0
-_HALLUCINATION_SILENCE_THRESHOLD = 1.5  # CT2 전용 (MLX CLI는 --word-timestamps 강제로 파서 깨짐)
+# Decoder rejection thresholds — DO NOT tighten without a multi-file
+# evaluation on Korean speech. These are deliberately at Whisper defaults.
+#
+# The trap: when transcripts contain noise/hallucinations, the obvious move is
+# to tighten these (raise no_speech, raise logprob toward 0, lower compression
+# ratio). It silences some noise but its bigger cost is dropping quiet or
+# short legitimate utterances — extremely common in Korean conversational
+# speech (single-syllable backchannels, trailing endings, brief affirmations).
+# This trade has been measured and was not worth it.
+#
+# The remaining failure mode at defaults is greedy repetition loops. Those
+# are already handled by (a) temperature fallback inside the decoder
+# (compression-ratio check trips → retry with rising randomness) and (b)
+# `hallucination_silence_threshold` below. Tightening these constants does
+# NOT improve loop suppression; it only removes real speech.
+#
+# If you must change a value here, validate against ≥3 Korean recordings of
+# different content types (noisy live, clean monologue, multi-speaker
+# discussion) and check both hallucination count AND total speech duration
+# captured — not just hallucination count.
+_LOGPROB_THRESHOLD = -1.0
+_COMPRESSION_RATIO_THRESHOLD = 2.4
+_HALLUCINATION_SILENCE_THRESHOLD = 2.0  # CT2 only — MLX CLI does not accept this flag
 
 THRESHOLD_PROFILE: dict[str, dict[str, float]] = {
-    "file": {"no_speech_threshold": 0.85, "hallucination_silence_threshold": 1.5},
-    "chunk": {"no_speech_threshold": 0.90, "hallucination_silence_threshold": 3.0},
+    "file": {"no_speech_threshold": 0.6, "hallucination_silence_threshold": 2.0},
+    "chunk": {"no_speech_threshold": 0.6, "hallucination_silence_threshold": 2.0},
 }
 
 
@@ -136,17 +154,34 @@ def _run_mlx(
 
     cmd += ["--clip-timestamps", _clip_arg]
 
-    # Hallucination mitigation (회의실 잡음/에코 환경)
-    # NOTE: hallucination_silence_threshold is intentionally NOT passed to mlx-whisper CLI.
-    # The flag breaks stdout JSON parsing. Only no_speech_threshold is applied on the MLX path.
-    # CT2 path (_run_ct2) applies both thresholds via WhisperModel.transcribe() kwargs.
+    # --language ko is REQUIRED. Do NOT remove or change to auto-detect.
+    # Whisper's auto-detect runs on the opening seconds, which in real-world
+    # recordings are often background music, breath, or near silence —
+    # conditions where the language head drifts to English and emits phantom
+    # phrases like "Thank you for watching" or "Thanks for listening". This
+    # product transcribes Korean only, so forcing the language is correct AND
+    # safer than letting the model guess.
+    #
+    # --hallucination-silence-threshold is intentionally NOT passed. The flag
+    # exists in the underlying API but breaks mlx-whisper CLI's stdout JSON
+    # parsing (the lines we depend on for per-segment streaming). The CT2
+    # path applies it via kwargs, where it works correctly.
+    #
+    # Temperature is intentionally left unset so mlx CLI uses its default
+    # fallback ladder (0.0 → 0.2 → 0.4 → 0.6 → 0.8 → 1.0). Do NOT pin
+    # `--temperature 0` here: it makes decoding deterministic-greedy, which
+    # produces infinite repetition loops on hard inputs (e.g. a 1-second
+    # segment containing the same sentence repeated 16 times). The fallback
+    # ladder is the decoder's built-in escape — when its compression-ratio
+    # check trips on a repetitive output, it retries with higher randomness
+    # and breaks the loop. Removing the fallback re-introduces the loops.
     _thresholds = THRESHOLD_PROFILE[profile]
     cmd += [
+        "--language", "ko",
         "--condition-on-previous-text", "False",
         "--no-speech-threshold", str(_thresholds["no_speech_threshold"]),
         "--logprob-threshold", str(_LOGPROB_THRESHOLD),
         "--compression-ratio-threshold", str(_COMPRESSION_RATIO_THRESHOLD),
-        "--temperature", "0",
     ]
 
     env = os.environ.copy()
@@ -221,10 +256,15 @@ def _run_ct2(
     if model_dir is None:
         raise TranscriptionError("model_dir is required for faster-whisper path")
     model = _get_ct2_model(model_dir)
-    # Hallucination mitigation (회의실 잡음/에코 환경)
-    # log_prob_threshold: faster-whisper는 언더스코어 표기 사용 (MLX의 --logprob-threshold와 다름)
+    # language="ko" is REQUIRED — see _run_mlx for rationale; same constraint.
+    # Temperature is intentionally OMITTED so faster-whisper uses its default
+    # fallback ladder (0.0..1.0 step 0.2) — do NOT pin temperature=0, it
+    # re-introduces greedy repetition loops on hard inputs.
+    # log_prob_threshold uses the underscore form (faster-whisper convention,
+    # not the MLX --logprob-threshold hyphen form).
     _thresholds = THRESHOLD_PROFILE[profile]
     kwargs: dict = {
+        "language": "ko",
         "beam_size": 5,
         "vad_filter": True,
         "condition_on_previous_text": False,
@@ -232,7 +272,6 @@ def _run_ct2(
         "log_prob_threshold": _LOGPROB_THRESHOLD,
         "compression_ratio_threshold": _COMPRESSION_RATIO_THRESHOLD,
         "hallucination_silence_threshold": _thresholds["hallucination_silence_threshold"],
-        "temperature": 0,
     }
     if prompt:
         kwargs["initial_prompt"] = prompt
