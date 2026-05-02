@@ -60,8 +60,8 @@ alpha 기반으로 3단계 surface(`#f8f9fa` / `#ffffff` / `#fafafa`) 위에서 
 
 | Token | Value | Usage |
 | --- | --- | --- |
-| `--color-bg-hover` | `rgba(0, 0, 0, 0.04)` | row/menu/button hover. surface 종류와 무관하게 일정한 강도 |
-| `--color-bg-selected` | `#f4f4f5` | 현재 선택된 list row, active menu item, focused segment |
+| `--color-bg-hover` | `rgba(0, 0, 0, 0.04)` | 카드/패널/모달/dropdown/sidebar 모든 surface 위의 row/menu/button hover. 단일 hover 톤으로 통일 |
+| `--color-bg-selected` | `rgba(0, 0, 0, 0.06)` | 현재 선택된 list row, active menu item, focused segment. hover(4%)보다 한 단계 진해 명확히 인식되도록 함 |
 | `--color-backdrop` | `rgba(0, 0, 0, 0.5)` | modal/dialog 뒤 dim layer |
 
 ### Blue — Link & Focus Only
@@ -185,7 +185,7 @@ Letter-spacing은 사이즈 클수록 더 negative(-0.03 → -0.02 → -0.01 →
 | --- | --- | --- | --- |
 | `sm` | `32px` | `0 10px` | `14px / 500` |
 | `md` (default) | `36px` | `0 14px` | `14px / 500` |
-| `lg` | `48px` | `0 20px` | `15px / 600` |
+| `lg` | `44px` | `0 18px` | `16px / 600` |
 
 **Primary** — 가장 강한 액션 (예: "전사 시작", "요약 생성"):
 - Default: `bg #171717 / text #ffffff`
@@ -233,7 +233,7 @@ Letter-spacing은 사이즈 클수록 더 negative(-0.03 → -0.02 → -0.01 →
 | --- | --- | --- | --- |
 | Default | `#ffffff` | `1px solid rgba(0,0,0,0.08)` | none |
 | Hover (clickable) | `#ffffff` | `1px solid rgba(0,0,0,0.12)` | none |
-| Selected | `#f4f4f5` | `1px solid rgba(0,0,0,0.12)` | none |
+| Selected | `rgba(0, 0, 0, 0.06)` | `1px solid rgba(0,0,0,0.12)` | none |
 
 - Radius: `8px`
 - Padding: `--card-padding-sm: 12px` (compact list item) / `--card-padding-md: 16px` (standard) / `--card-padding-lg: 24px` (featured/empty state)
@@ -281,8 +281,8 @@ tinted bg는 `~95% lightness` 옅은 톤, text는 `~30% lightness` 진한 톤. �
 - Divider 없음. hover/selected bg 차이로만 row 구분.
 - Default: `bg transparent`
 - Hover: `bg rgba(0,0,0,0.04)`
-- Selected: `bg #f4f4f5`
-- Selected + hover: `bg #f4f4f5` (selected 우선)
+- Selected: `bg rgba(0, 0, 0, 0.06)`
+- Selected + hover: `bg rgba(0, 0, 0, 0.06)` (selected 우선)
 - Focus-visible: `outline 2px solid #0072f5 / outline-offset -2px`
 
 **Row 내부 구조:**
@@ -365,7 +365,7 @@ Tooltip은 보조 정보 전용. 사용자가 못 봐도 작업 완수 가능해
 - `padding 8px 10px / radius 6px / font 14px / 400 / #171717`
 - 좌측 16px 아이콘(옵션) + 라벨 + 우측 단축키 mono caption(옵션)
 - Hover: `bg rgba(0,0,0,0.04)`
-- Focus (keyboard): `bg #f4f4f5`
+- Focus (keyboard): `bg rgba(0, 0, 0, 0.06)`
 - Destructive item: `text #dc2626 / hover bg #fef2f2`
 
 **Divider / Group label:**
@@ -443,6 +443,8 @@ Locally는 web productivity 앱(tablet ~ desktop)이라 fluid 레이아웃을 �
 - 안에 note list + "새 녹음" button + 검색
 - Resize: `min-width 200px / max-width 360px` (drag handle on right border)
 - Collapse: `⌘\` 또는 ghost button으로 toggle
+- **Sidebar item hover**: `bg var(--color-bg-hover)` (= `rgba(0,0,0,0.04)`). 모든 surface와 동일한 hover 톤을 공유.
+- **Sidebar item selected**: `bg var(--color-bg-selected)` (= `rgba(0,0,0,0.06)`, 전역 selected token 동일). selected가 hover보다 항상 우선. hover(4%)보다 한 단계 진한 6%로 현재 위치를 명확히 표시.
 
 **Main:**
 - `flex 1 / bg #ffffff / overflow-y auto / padding 24px 32px`
@@ -528,8 +530,8 @@ Depth는 shadow가 아니라 **border + surface tone 차이**로 만들어진다
 
 **State overlays** — depth 단계가 아닌, 같은 Level 안의 일시적 시각 변화:
 - Hover: `bg + rgba(0,0,0,0.04) overlay`
-- Selected: `bg #f4f4f5`
-- Active/pressed: `bg #f4f4f5 + border-strong`
+- Selected: `bg rgba(0, 0, 0, 0.06)`
+- Active/pressed: `bg rgba(0, 0, 0, 0.06) + border-strong`
 - Focus: `outline 2px solid #0072f5 / outline-offset`
 
 Level 3 이상 추가 금지. 카드 안의 카드의 카드는 UI 설계 실패 시그널 — 정보 구조를 다시 생각한다. 같은 Level 안에서 다른 색 surface 사용 금지.
@@ -587,7 +589,7 @@ UI는 precise하고 quiet하며 trustworthy하게 느껴져야 한다. 시각적
 - 모든 회색은 `#171717` base의 무채색 grayscale에서 파생한다.
 - Border는 alpha 토큰 두 단계(`rgba(0,0,0,0.08)` / `rgba(0,0,0,0.12)`)만 사용한다.
 - Surface는 page `#f8f9fa` / card `#ffffff` / sub-panel `#fafafa` 3단계로 고정한다.
-- Hover는 `rgba(0,0,0,0.04)` alpha overlay로, surface 종류와 무관하게 일정한 강도로 적용한다.
+- Hover는 모든 surface(`#ffffff` / `#f8f9fa` / `#fafafa`) 위에서 `rgba(0,0,0,0.04)`로 통일한다 — surface별로 다른 hover 톤을 두지 않는다.
 - Semantic color(success/warning/error)는 vivid 톤(`#27a644` / `#d97706` / `#dc2626`)으로 사용한다. 큰 면적의 fill 대신 텍스트 + 아이콘 + 좁은 fill 영역에서만 노출한다.
 
 **Typography:**
@@ -761,9 +763,9 @@ Tablet은 touch input, desktop은 pointer.
 --color-border-strong:   rgba(0, 0, 0, 0.12);
 
 /* Color — Interactive States */
---color-bg-hover:        rgba(0, 0, 0, 0.04);
---color-bg-selected:     #f4f4f5;
---color-backdrop:        rgba(0, 0, 0, 0.5);
+--color-bg-hover:           rgba(0, 0, 0, 0.04);  /* 모든 surface 공통 */
+--color-bg-selected:        rgba(0, 0, 0, 0.06);   /* hover(4%)보다 한 단계 진한 selected overlay */
+--color-backdrop:           rgba(0, 0, 0, 0.5);
 
 /* Color — Blue (link & focus only) */
 --color-blue:            #0072f5;
@@ -832,7 +834,7 @@ Tablet은 touch input, desktop은 pointer.
 Locally 메인 워크스페이스 화면. 좌측 sidebar(width 260px, bg #f8f9fa, border-right 1px solid rgba(0,0,0,0.08), padding 8px) 안에 검색 input + "새 녹음" primary md button + note list. 우측 main(flex 1, bg #ffffff, padding 24px 32px) 안에 page title 24px/700/letter-spacing -0.02em + 그 아래 24px gap + transcript 영역. 전체 layout은 fluid full-window. centered max-width 안 씀.
 
 #### Note list row
-카드 아닌 list row 컴포넌트. padding 8px 12px / radius 6px / margin 2px 0. 좌측 16px 아이콘 @ #666666 + gap 12px + 중앙 title(14px / 500 / #171717) + subtitle(12px / 400 / #666666) + 우측 timestamp(12px / mono / #666666 / tnum). hover 시 bg rgba(0,0,0,0.04). selected는 bg #f4f4f5. divider 없음.
+카드 아닌 list row 컴포넌트. padding 8px 12px / radius 6px / margin 2px 0. 좌측 16px 아이콘 @ #666666 + gap 12px + 중앙 title(14px / 500 / #171717) + subtitle(12px / 400 / #666666) + 우측 timestamp(12px / mono / #666666 / tnum). hover 시 bg rgba(0,0,0,0.04). selected는 bg rgba(0,0,0,0.06). divider 없음.
 
 #### Primary CTA button
 primary md button. height 36px / padding 0 14px / bg #171717 / text #ffffff / font 14px-500 / radius 6px. hover bg #2a2a2a, active bg #0a0a0a, disabled bg #808080. focus-visible 시 outline 2px solid #0072f5 / outline-offset 2px.
