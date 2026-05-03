@@ -53,15 +53,14 @@ class TestSchema:
 
     def test_all_expected_columns_exist(self, conn):
         cols = {row["name"] for row in conn.execute("PRAGMA table_info(notes)")}
-        assert {
+        assert cols == {
             "id",
             "title",
             "created_at",
             "status",
             "audio_path",
             "transcript_path",
-            "summary_path",
-        }.issubset(cols)
+        }
 
     def test_open_db_creates_parent_dir(self, tmp_path):
         nested = tmp_path / "nested" / "sub" / "db.sqlite"
@@ -84,7 +83,6 @@ class TestCreateNote:
         assert doc["status"] == "pending"
         assert doc["createdAt"]
         assert doc["transcriptPath"] is None
-        assert doc["summaryPath"] is None
 
     def test_create_note_no_title(self, conn):
         """B3: title=None → stored as literal 'untitled'.
@@ -171,11 +169,6 @@ class TestUpdateNote:
             conn, doc["id"], transcript_path="/tmp/transcript.md"
         )
         assert updated["transcriptPath"] == "/tmp/transcript.md"
-
-    def test_updates_summary_path(self, conn):
-        doc = create_note(conn, title="x")
-        updated = update_note(conn, doc["id"], summary_path="/tmp/s.md")
-        assert updated["summaryPath"] == "/tmp/s.md"
 
     def test_ignores_unknown_columns(self, conn):
         doc = create_note(conn, title="x")

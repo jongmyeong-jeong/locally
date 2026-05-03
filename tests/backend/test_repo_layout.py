@@ -22,15 +22,19 @@ def test_required_paths_exist():
         "app/server.py",
         "app/paths.py",
         "app/db.py",
-        "app/glossary.py",
-        "app/models_catalog.py",
-        "app/ai_detect.py",
-        "app/transcribe.py",
-        "app/transcribe_parser_mlx.py",
-        "app/transcribe_parser_ct2.py",
-        "app/summarize.py",
+        "app/groq_client.py",
+        "app/transcribe_queue.py",
         "app/recordings.py",
+        "app/recording_chunks.py",
         "app/server_jobs.py",
+        "app/audio_io.py",
+        "app/audio_concat.py",
+        "app/vad.py",
+        "app/vad_realtime.py",
+        "app/markdown_writer.py",
+        "app/prompt.py",
+        "app/preflight.py",
+        "app/updater.py",
         "web",
         "web/package.json",
         "web/index.html",
@@ -47,11 +51,20 @@ def test_required_paths_exist():
 
 
 def test_deleted_paths_absent():
+    """Files dropped during the local-Whisper → groq migration must stay gone."""
     forbidden = [
         "src",
         "electron",
         "main.js",
         "preload.js",
+        # Local Whisper / summarization legacy (replaced by Groq API).
+        "app/glossary.py",
+        "app/models_catalog.py",
+        "app/ai_detect.py",
+        "app/transcribe.py",
+        "app/transcribe_parser_mlx.py",
+        "app/transcribe_parser_ct2.py",
+        "app/summarize.py",
     ]
     for rel in forbidden:
         p = REPO_ROOT / rel

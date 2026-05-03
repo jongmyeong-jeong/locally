@@ -1,8 +1,7 @@
-"""Tests for /api/notes endpoints (B3) and /api/glossary (AC-8)."""
+"""Tests for /api/notes endpoints (B3)."""
 from __future__ import annotations
 
 import io
-import json
 from pathlib import Path
 
 import pytest
@@ -99,45 +98,3 @@ class TestNoteCrud:
         assert r.status_code == 204
         r2 = client.get(f"/api/notes/{created['id']}")
         assert r2.status_code == 404
-
-
-class TestGlossaryEndpoint:
-    def test_get_empty_glossary(self, client):
-        r = client.get("/api/glossary")
-        assert r.status_code == 200
-        assert r.json() == []
-
-    def test_put_glossary_persists(self, client, tmp_home):
-        """AC-8: PUT returns 200 w/ Content-Length:0 + file written verbatim."""
-        r = client.put(
-            "/api/glossary",
-            content=json.dumps(["Notion", "애플", "Figma"]).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        assert r.status_code == 200
-        # Content-Length:0 + empty body.
-        assert r.headers.get("content-length") == "0"
-        assert r.content == b""
-
-        # File must contain the exact list with ensure_ascii=False.
-        glossary_file = tmp_home / ".lonta" / "data" / "glossary.json"
-        assert glossary_file.exists()
-        content = glossary_file.read_text(encoding="utf-8")
-        assert json.loads(content) == ["Notion", "애플", "Figma"]
-
-    def test_put_glossary_invalid_body(self, client):
-        r = client.put(
-            "/api/glossary",
-            content=b'{"not":"array"}',
-            headers={"Content-Type": "application/json"},
-        )
-        assert r.status_code == 400
-
-    def test_put_glossary_get_round_trip(self, client, tmp_home):
-        client.put(
-            "/api/glossary",
-            content=json.dumps(["A", "B"]).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        r = client.get("/api/glossary")
-        assert r.json() == ["A", "B"]

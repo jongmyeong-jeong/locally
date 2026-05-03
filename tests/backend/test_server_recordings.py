@@ -69,13 +69,13 @@ def _reset_live_state():
 
 
 @pytest.fixture
-def mock_model_ready(monkeypatch):
-    """Patch _any_model_ready to return True so create_recording passes the 503 guard."""
-    monkeypatch.setattr(server_mod, "_any_model_ready", lambda: True)
+def mock_groq_key(monkeypatch):
+    """Set GROQ_API_KEY so POST /api/recordings passes the 503 guard."""
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
 
 
 @pytest.fixture
-def client(tmp_home, mock_model_ready):  # noqa: ARG001
+def client(tmp_home, mock_groq_key):  # noqa: ARG001
     app = create_app()
     with TestClient(app) as c:
         yield c
@@ -238,15 +238,15 @@ class TestUnknownSession:
         assert r.status_code == 404
 
 
-class TestModelNotInstalled:
-    def test_create_recording_returns_503_when_no_model(self, tmp_home, monkeypatch):
-        """503 when _any_model_ready() is False."""
-        monkeypatch.setattr(server_mod, "_any_model_ready", lambda: False)
+class TestGroqKeyMissing:
+    def test_create_recording_returns_503_when_no_key(self, tmp_home, monkeypatch):
+        """503 when GROQ_API_KEY is not set."""
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
         app = create_app()
         with TestClient(app) as c:
             r = c.post("/api/recordings", json={})
         assert r.status_code == 503
-        assert r.json()["error"] == "model_not_installed"
+        assert r.json()["error"] == "groq_api_key_missing"
 
 
 class TestConcurrentRecording:
@@ -254,7 +254,7 @@ class TestConcurrentRecording:
         self, tmp_home, monkeypatch
     ):
         """409 when another recording session is already active."""
-        monkeypatch.setattr(server_mod, "_any_model_ready", lambda: True)
+        monkeypatch.setenv("GROQ_API_KEY", "test-key")
         app = create_app()
         with TestClient(app) as c:
             r1 = c.post("/api/recordings", json={})

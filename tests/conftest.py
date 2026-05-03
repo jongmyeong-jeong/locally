@@ -12,7 +12,6 @@ import platform as _platform
 import socket
 import subprocess
 import sys
-import time
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -177,51 +176,6 @@ def sample_m4a(tmp_path):
     # Fallback: write placeholder bytes.
     dest.write_bytes(b"\x00" * 128)
     return dest
-
-
-# ---------------------------------------------------------------------------
-# mock_snapshot_download_progress — yields ≥6 progress ticks over ~3s.
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def mock_snapshot_download_progress(monkeypatch, tmp_path):
-    """Install a fake huggingface_hub.snapshot_download that:
-      - Writes a fake model file into local_dir.
-      - Returns the local_dir path.
-      - Sleeps ~0.5s across 6 ticks (≥6 progress events, ≤500ms gap).
-
-    The server hits the hook via `_tick(0,1)` + `_tick(1,1)` around the
-    call; the slow write loop below is what creates observable cadence in
-    downstream tests.
-    """
-    events = {"calls": 0}
-
-    def _fake_snapshot_download(  # noqa: PLR0913
-        repo_id: str,
-        *,
-        local_dir: str,
-        local_dir_use_symlinks: bool = False,
-        resume_download: bool = True,
-        **_kwargs,
-    ) -> str:
-        events["calls"] += 1
-        local = Path(local_dir)
-        local.mkdir(parents=True, exist_ok=True)
-        # Six cadence ticks (~0.3s total) — keeps test fast while still
-        # exercising the ≤500ms gap contract.
-        for _ in range(6):
-            time.sleep(0.05)
-        (local / "model.bin").write_bytes(b"MOCK")
-        (local / "config.json").write_text("{}", encoding="utf-8")
-        return str(local)
-
-    import huggingface_hub
-
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", _fake_snapshot_download)
-    # Ensure late-imports inside server.py see the patched name too.
-    monkeypatch.setitem(sys.modules, "huggingface_hub", huggingface_hub)
-    return events
 
 
 # ---------------------------------------------------------------------------
