@@ -192,11 +192,6 @@ class SessionTranscribeQueue:
         """Whisper conditioning prompt passed at queue creation time."""
         return self._prompt
 
-    # Keep old property name for backward-compat with any server.py references.
-    @property
-    def glossary_prompt(self) -> str | None:
-        return self._prompt
-
     @property
     def failed_ranges(self) -> list[dict]:
         """List of {start_ms, end_ms} for batches that ended in 'failed'."""
@@ -255,7 +250,7 @@ class SessionTranscribeQueue:
         batch_wav: Path | None = None
 
         try:
-            # 1. Insert a single recording_chunks row for this batch.
+            # 1. Insert the batch row + flip VAD chunk rows in a single connection.
             with closing(db.open_db()) as conn:
                 batch_chunk_id = recording_chunks.insert_chunk(
                     conn,
@@ -265,13 +260,8 @@ class SessionTranscribeQueue:
                     batch.end_ms,
                 )
                 recording_chunks.update_chunk_status(conn, batch_chunk_id, "transcribing")
-
-            # 2. Mark original VAD chunk rows as transcribing (best-effort; they
-            #    were inserted by server.py before push() was called).
-            for cid in chunk_ids:
                 try:
-                    with closing(db.open_db()) as conn:
-                        recording_chunks.update_chunk_status(conn, cid, "transcribing")
+                    recording_chunks.bulk_update_status(conn, chunk_ids, "transcribing")
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -423,12 +413,8 @@ class SessionTranscribeQueue:
 
             with closing(db.open_db()) as conn:
                 recording_chunks.update_chunk_status(conn, batch_chunk_id, "success", text)
-
-            # Clean up original VAD chunk rows (mark success, best-effort).
-            for cid in chunk_ids:
                 try:
-                    with closing(db.open_db()) as conn:
-                        recording_chunks.update_chunk_status(conn, cid, "success")
+                    recording_chunks.bulk_update_status(conn, chunk_ids, "success")
                 except Exception:  # noqa: BLE001
                     pass
 
@@ -448,10 +434,6 @@ class SessionTranscribeQueue:
                 for seg in adjusted_segments
             ]
 
-            # Emit chunk_transcribed callback for the batch.
-            # segments is passed as a keyword arg so that the current 5-positional-arg
-            # registrant (_push_chunk_transcribed in server.py) does not break.
-            # TODO G1.3: update _push_chunk_transcribed to accept segments natively.
             cb = _on_chunk_transcribed
             if cb is not None:
                 try:
@@ -462,15 +444,6 @@ class SessionTranscribeQueue:
                         batch.end_ms,
                         text,
                         segments=payload_segments,
-                    )
-                except TypeError:
-                    # Fallback for registrants that don't yet accept the segments kwarg.
-                    await cb(
-                        self._session_id,
-                        batch.seq,
-                        batch.start_ms,
-                        batch.end_ms,
-                        text,
                     )
                 except Exception:  # noqa: BLE001
                     logger.warning(
@@ -537,18 +510,16 @@ class SessionTranscribeQueue:
             try:
                 with closing(db.open_db()) as conn:
                     recording_chunks.update_chunk_status(conn, batch_chunk_id, "failed")
+                    try:
+                        recording_chunks.bulk_update_status(
+                            conn, [c.chunk_id for c in batch.chunks], "failed"
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
             except Exception:
                 logger.exception(
                     "Could not mark batch chunk %d as failed", batch_chunk_id
                 )
-
-            # Also mark original VAD chunk rows as failed (best-effort).
-            for chunk in batch.chunks:
-                try:
-                    with closing(db.open_db()) as conn:
-                        recording_chunks.update_chunk_status(conn, chunk.chunk_id, "failed")
-                except Exception:  # noqa: BLE001
-                    pass
 
         self._failed_ranges.append(
             {"start_ms": batch.start_ms, "end_ms": batch.end_ms}
@@ -636,24 +607,16 @@ def _get_lock() -> asyncio.Lock:
 async def create_session_queue(
     session_id: str,
     note_id: str,
-    model_dir: str | None = None,
-    glossary_prompt: str | None = None,
     prompt: str | None = None,
 ) -> SessionTranscribeQueue:
-    """Create and register a queue for session_id; raises if already exists.
-
-    ``model_dir`` is accepted but ignored (groq migration — no local model).
-    ``glossary_prompt`` is the legacy name; ``prompt`` is preferred.
-    Both are forwarded to the groq transcription call as the Whisper hint.
-    """
-    effective_prompt = prompt if prompt is not None else glossary_prompt
+    """Create and register a queue for session_id; raises if already exists."""
     lock = _get_lock()
     async with lock:
         if session_id in _QUEUES:
             raise ValueError(
                 f"Session queue already exists for session_id={session_id!r}"
             )
-        q = SessionTranscribeQueue(session_id, note_id, effective_prompt)
+        q = SessionTranscribeQueue(session_id, note_id, prompt)
         _QUEUES[session_id] = q
         return q
 

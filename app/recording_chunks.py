@@ -68,6 +68,27 @@ def update_chunk_status(
     conn.commit()
 
 
+def bulk_update_status(
+    conn: sqlite3.Connection,
+    chunk_ids: list[int],
+    status: str,
+) -> None:
+    """Update status for many chunk ids in a single statement. No-op on empty list."""
+    if not chunk_ids:
+        return
+    if status not in _ALLOWED_STATUSES:
+        raise ValueError(
+            f"Invalid chunk status {status!r}. Must be one of {sorted(_ALLOWED_STATUSES)}"
+        )
+    placeholders = ",".join("?" * len(chunk_ids))
+    conn.execute(
+        f"UPDATE recording_chunks SET status = ?, updated_at = ? "
+        f"WHERE id IN ({placeholders})",
+        [status, _now_iso(), *chunk_ids],
+    )
+    conn.commit()
+
+
 def get_chunks(conn: sqlite3.Connection, note_id: str) -> list[dict]:
     """Return all chunks for a note ordered by seq."""
     rows = conn.execute(

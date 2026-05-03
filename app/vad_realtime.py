@@ -10,6 +10,7 @@ References:
 from __future__ import annotations
 
 import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 from app.vad import FRAME_LEN, HOP_LEN, SAMPLE_RATE, THRESHOLD_FLOOR
 
@@ -25,12 +26,6 @@ def _ms_to_samples(ms: int) -> int:
 
 def _samples_to_ms(samples: int) -> int:
     return samples // _SAMPLES_PER_MS
-
-
-def _is_silent_frame(frame: np.ndarray) -> bool:
-    """Return True when the RMS of *frame* is below THRESHOLD_FLOOR."""
-    rms = float(np.sqrt(np.mean(frame.astype(np.float32) ** 2)))
-    return rms < THRESHOLD_FLOOR
 
 
 # ---------------------------------------------------------------------------
@@ -138,9 +133,8 @@ class ChunkBoundaryDetector:
     def _find_silence_trigger(self) -> int | None:
         """Return end-of-speech offset (ms) if a qualifying silence run exists.
 
-        Scans frame-by-frame using FRAME_LEN / HOP_LEN windows from app.vad.
-        Returns the offset (in ms from chunk start) of the last voiced frame
-        before the qualifying silence, or None if no such point exists.
+        Vectorized via sliding_window_view + run-length analysis on the silence
+        mask.  Equivalent to the previous frame-by-frame scan, O(N) numpy ops.
         """
         buf = self._buffer
         if buf.size < FRAME_LEN:
@@ -149,39 +143,22 @@ class ChunkBoundaryDetector:
         silence_needed = _ms_to_samples(self.SILENCE_MS)
         min_chunk_samples = _ms_to_samples(self.MIN_CHUNK_MS)
 
-        # Compute frame count; frames use HOP_LEN stride.
-        n_frames = 1 + (buf.size - FRAME_LEN) // HOP_LEN
+        windows = sliding_window_view(buf, window_shape=FRAME_LEN)[::HOP_LEN]
+        rms = np.sqrt(np.mean(windows.astype(np.float32) ** 2, axis=1))
+        silent = rms < THRESHOLD_FLOOR
+        if not silent.any():
+            return None
 
-        # Build boolean silence mask per frame.
-        silent: list[bool] = []
-        for i in range(n_frames):
-            start = i * HOP_LEN
-            frame = buf[start : start + FRAME_LEN]
-            silent.append(_is_silent_frame(frame))
+        # Find run boundaries on the boolean mask via a single diff pass.
+        padded = np.concatenate(([False], silent, [False]))
+        diffs = np.diff(padded.astype(np.int8))
+        run_starts = np.flatnonzero(diffs == 1)
+        run_ends = np.flatnonzero(diffs == -1)  # exclusive end (frame index)
 
-        # Walk frames looking for a silence run >= silence_needed samples.
-        # Each frame starts at i*HOP_LEN; a contiguous silence run [j, k)
-        # spans samples [j*HOP_LEN, k*HOP_LEN + FRAME_LEN).
-        # We report end-of-speech = start of the silence run.
-
-        i = 0
-        while i < n_frames:
-            if not silent[i]:
-                i += 1
-                continue
-            # Found start of a silence run at frame i.
-            j = i
-            while j < n_frames and silent[j]:
-                j += 1
-            # Silence run covers frames [i, j).
-            silence_start_sample = i * HOP_LEN
-            silence_end_sample = (j - 1) * HOP_LEN + FRAME_LEN  # inclusive end of last silent frame
+        for start_frame, end_frame in zip(run_starts, run_ends):
+            silence_start_sample = int(start_frame) * HOP_LEN
+            silence_end_sample = (int(end_frame) - 1) * HOP_LEN + FRAME_LEN
             silence_span = silence_end_sample - silence_start_sample
-
             if silence_span >= silence_needed and silence_start_sample >= min_chunk_samples:
-                # End-of-speech is at the start of this silence run.
                 return _samples_to_ms(silence_start_sample)
-
-            i = j  # skip past this silence run
-
         return None

@@ -498,36 +498,44 @@ def create_app() -> FastAPI:
 
         from app import markdown_writer
 
-        # 1. Load note.
-        with db_mod.open_db() as conn:
-            note = db_mod.get_note(conn, note_id)
+        def _load_note_and_chunks() -> tuple[dict | None, list[dict]]:
+            with db_mod.open_db() as conn:
+                note_local = db_mod.get_note(conn, note_id)
+                chunks_local = (
+                    recording_chunks.get_chunks(conn, note_id)
+                    if note_local is not None
+                    else []
+                )
+            return note_local, chunks_local
+
+        note, chunks = await asyncio.to_thread(_load_note_and_chunks)
         if note is None:
             raise HTTPException(status_code=404, detail="note not found")
-
-        # 2. Load chunks; 404 if none.
-        with db_mod.open_db() as conn:
-            chunks = recording_chunks.get_chunks(conn, note_id)
         if not chunks:
             raise HTTPException(status_code=404, detail="no recording chunks found")
 
         # 3. Collect segments from sidecar files, sorted by seq.
-        sidecar_pattern = str(paths.audio_dir() / f"segments-{note_id}-*.json")
-        sidecar_files = sorted(
-            glob_mod.glob(sidecar_pattern),
-            key=lambda p: int(re_mod.search(r"-(\d+)\.json$", p).group(1))  # type: ignore[union-attr]
-            if re_mod.search(r"-(\d+)\.json$", p)
-            else 0,
-        )
-        all_segments: list[dict] = []
-        for sf in sidecar_files:
-            try:
-                data = json.loads(Path(sf).read_text(encoding="utf-8"))
-                all_segments.extend(data.get("segments", []))
-            except (OSError, json.JSONDecodeError) as exc:
-                logger.warning(
-                    "segments_sidecar_read_error",
-                    {"note_id": note_id, "file": sf, "error": str(exc)},
-                )
+        _seq_re = re_mod.compile(r"-(\d+)\.json$")
+
+        def _read_sidecars() -> list[dict]:
+            pattern = str(paths.audio_dir() / f"segments-{note_id}-*.json")
+            files = sorted(
+                glob_mod.glob(pattern),
+                key=lambda p: int(m.group(1)) if (m := _seq_re.search(p)) else 0,
+            )
+            collected: list[dict] = []
+            for sf in files:
+                try:
+                    data = json.loads(Path(sf).read_text(encoding="utf-8"))
+                    collected.extend(data.get("segments", []))
+                except (OSError, json.JSONDecodeError) as exc:
+                    logger.warning(
+                        "segments_sidecar_read_error",
+                        {"note_id": note_id, "file": sf, "error": str(exc)},
+                    )
+            return collected
+
+        all_segments = await asyncio.to_thread(_read_sidecars)
 
         # 4. Build failed_ranges from chunks with status='failed'.
         failed_ranges = [
@@ -545,18 +553,21 @@ def create_app() -> FastAPI:
         note_title: str = note.get("title") or "untitled"
 
         # 6. Write .md to a temp file.
-        with tempfile.NamedTemporaryFile(
-            suffix=".md", delete=False, mode="w", encoding="utf-8"
-        ) as tmp:
-            tmp_path = Path(tmp.name)
+        def _write_md() -> Path:
+            with tempfile.NamedTemporaryFile(
+                suffix=".md", delete=False, mode="w", encoding="utf-8"
+            ) as tmp:
+                path = Path(tmp.name)
+            markdown_writer.write_transcript_md(
+                title=note_title,
+                recorded_at=recorded_at,
+                segments=all_segments,
+                failed_ranges=failed_ranges,
+                output_path=path,
+            )
+            return path
 
-        markdown_writer.write_transcript_md(
-            title=note_title,
-            recorded_at=recorded_at,
-            segments=all_segments,
-            failed_ranges=failed_ranges,
-            output_path=tmp_path,
-        )
+        tmp_path = await asyncio.to_thread(_write_md)
 
         # 7. Build a safe filename (ASCII + RFC 5987 UTF-8 fallback).
         date_str = recorded_at.strftime("%Y-%m-%d")
@@ -722,16 +733,19 @@ def create_app() -> FastAPI:
                         _VAD_LOCKS[session_id] = lock
                     async with lock:
                         boundaries = detector.feed(pcm)
+                        # Reserve sequential chunk_seq values inside the same lock
+                        # so concurrent chunk POSTs cannot collide on _CHUNK_SEQ.
+                        first_seq = _CHUNK_SEQ.get(session_id, 0)
+                        _CHUNK_SEQ[session_id] = first_seq + len(boundaries)
 
                     if boundaries and note_id:
                         sq = await transcribe_queue.get_session_queue(session_id)
                         with db_mod.open_db() as conn:
-                            for start_ms, end_ms, pcm_slice in boundaries:
-                                chunk_seq = _CHUNK_SEQ.get(session_id, 0)
+                            for offset, (start_ms, end_ms, pcm_slice) in enumerate(boundaries):
+                                chunk_seq = first_seq + offset
                                 chunk_id = recording_chunks.insert_chunk(
                                     conn, note_id, chunk_seq, start_ms, end_ms
                                 )
-                                _CHUNK_SEQ[session_id] = chunk_seq + 1
                                 # Write VAD PCM slice to a per-boundary WAV temp file.
                                 # This replaces the approximate webm-box audio path so that
                                 # boundaries spanning multiple browser chunks are captured fully.
@@ -800,15 +814,18 @@ def create_app() -> FastAPI:
             disconnect_task = asyncio.create_task(_disconnect_logger())
             try:
                 # 1. Finalize session — move webm to audio_dir, set status='finalizing'.
-                try:
+                def _finalize_sync() -> dict:
                     with db_mod.open_db() as conn:
-                        result = recordings_mod.finalize(
+                        return recordings_mod.finalize(
                             conn,
                             session_id,
                             title=title,
                             duration_sec=duration,
                             live=True,
                         )
+
+                try:
+                    result = await asyncio.to_thread(_finalize_sync)
                 except recordings_mod.ChunkGapError as exc:
                     await queue.put(
                         _sse_event(
@@ -828,10 +845,12 @@ def create_app() -> FastAPI:
                         session_obj.note_id if session_obj is not None else None
                     )
                     if note_id_short:
-                        with db_mod.open_db() as conn:
-                            db_mod.update_note(
-                                conn, note_id_short, status="transcription_failed"
-                            )
+                        def _mark_failed() -> None:
+                            with db_mod.open_db() as conn:
+                                db_mod.update_note(
+                                    conn, note_id_short, status="transcription_failed"
+                                )
+                        await asyncio.to_thread(_mark_failed)
                     await queue.put(
                         _sse_event(
                             "error",
@@ -888,45 +907,41 @@ def create_app() -> FastAPI:
                 # 4. (Option H retry removed — retries handled by groq_client
                 #     at batch level; failed_ranges recorded in .md by markdown_writer.)
 
-                # 5. Assemble transcript from all chunks.
-                with db_mod.open_db() as conn:
-                    all_done = recording_chunks.all_chunks_done(conn, note_id)
-                    chunks = recording_chunks.get_chunks(conn, note_id)
+                # 5. Assemble transcript + persist note row in one off-loop step.
+                #    Single DB connection covers chunks fetch, note update, and
+                #    transcript file write to keep the event loop unblocked.
+                def _persist_transcript() -> tuple[Path, bool, bool]:
+                    with db_mod.open_db() as conn:
+                        all_done_local = recording_chunks.all_chunks_done(conn, note_id)
+                        chunks_local = recording_chunks.get_chunks(conn, note_id)
+                        note_row_local = db_mod.get_note(conn, note_id)
+                        text_body = (
+                            "\n".join(c["text"] for c in chunks_local if c.get("text"))
+                            if chunks_local
+                            else ""
+                        )
+                        title_local = (
+                            note_row_local["title"] if note_row_local else title
+                        )
+                        basename_local = paths.audio_basename(
+                            title_local, datetime.now(), note_id=note_id
+                        )
+                        out_path_local = paths.transcripts_dir() / f"{basename_local}.md"
+                        out_path_local.parent.mkdir(parents=True, exist_ok=True)
+                        out_path_local.write_text(text_body, encoding="utf-8")
+                        db_mod.update_note(
+                            conn,
+                            note_id,
+                            status="transcribed",
+                            transcript_path=str(out_path_local),
+                        )
+                        return out_path_local, all_done_local, bool(chunks_local)
 
-                if not all_done and chunks:
-                    # Some chunks still failed; fall through with what we have.
+                out_path, all_done, has_chunks = await asyncio.to_thread(_persist_transcript)
+                if not all_done and has_chunks:
                     logger.warning(
                         "finalize_chunks_not_all_done",
                         {"session_id": session_id, "note_id": note_id},
-                    )
-
-                if chunks:
-                    transcript_text = "\n".join(
-                        c["text"] for c in chunks if c.get("text")
-                    )
-                else:
-                    # No pre-transcription chunks were queued (e.g. very short
-                    # recording that produced no VAD boundaries); leave transcript
-                    # empty — caller can trigger normal transcription.
-                    transcript_text = ""
-
-                # Write transcript file.
-                with db_mod.open_db() as conn:
-                    note_row = db_mod.get_note(conn, note_id)
-                note_title = note_row["title"] if note_row else title
-                basename = paths.audio_basename(
-                    note_title, datetime.now(), note_id=note_id
-                )
-                out_path = paths.transcripts_dir() / f"{basename}.md"
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                out_path.write_text(transcript_text, encoding="utf-8")
-
-                with db_mod.open_db() as conn:
-                    db_mod.update_note(
-                        conn,
-                        note_id,
-                        status="transcribed",
-                        transcript_path=str(out_path),
                     )
 
                 # 6. Emit complete event.
