@@ -225,13 +225,13 @@ def mock_snapshot_download_progress(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# spawn_locally_start — start `locally start --no-browser --port=<free>` subprocess
+# spawn_lonta_start — start `lonta start --no-browser --port=<free>` subprocess
 # ---------------------------------------------------------------------------
 
 
 @pytest.fixture
-def spawn_locally_start(tmp_path, monkeypatch):
-    """Start a real `locally start --no-browser --host 127.0.0.1 --port <p>` process.
+def spawn_lonta_start(tmp_path, monkeypatch):
+    """Start a real `lonta start --no-browser --host 127.0.0.1 --port <p>` process.
 
     Yields (process, port). Test body must poll until HTTP readiness.
     Terminates on teardown.
@@ -243,12 +243,12 @@ def spawn_locally_start(tmp_path, monkeypatch):
         if env:
             env_full.update(env)
         # Make the spawned process use tmp_path as HOME so it doesn't litter
-        # the real ~/.locally during the test.
+        # the real ~/.lonta during the test.
         env_full["HOME"] = str(tmp_path)
         env_full["USERPROFILE"] = str(tmp_path)  # Windows
         # Skip update check and preflight so AC-2 lines are exactly lines 1-4.
-        env_full.setdefault("LOCALLY_SKIP_UPDATE", "1")
-        env_full.setdefault("LOCALLY_SKIP_PREFLIGHT", "1")
+        env_full.setdefault("LONTA_SKIP_UPDATE", "1")
+        env_full.setdefault("LONTA_SKIP_PREFLIGHT", "1")
         cmd = [
             sys.executable,
             "-m",

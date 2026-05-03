@@ -69,7 +69,7 @@ _UPDATE_ALIASES = {
 
 
 def open_db(path: Path | None = None) -> sqlite3.Connection:
-    """Open the locally db at ~/.locally/db.sqlite (or override).
+    """Open the lonta db at ~/.lonta/db.sqlite (or override).
 
     Applies migrate() and returns a connection with Row factory.
     """
@@ -91,7 +91,7 @@ def migrate(conn: sqlite3.Connection) -> None:
         conn.execute(stmt)
     conn.commit()
 
-    # Migration 1: drop notes.summary_path (Groq migration)
+    # Migration 1: drop notes.summary_path (groq migration)
     cols = {row[1] for row in conn.execute("PRAGMA table_info(notes)").fetchall()}
     if "summary_path" in cols:
         conn.execute("PRAGMA foreign_keys = OFF")

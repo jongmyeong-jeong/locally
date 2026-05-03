@@ -120,7 +120,7 @@ class TestGlossaryEndpoint:
         assert r.content == b""
 
         # File must contain the exact list with ensure_ascii=False.
-        glossary_file = tmp_home / ".locally" / "workspace" / "glossary.json"
+        glossary_file = tmp_home / ".lonta" / "data" / "glossary.json"
         assert glossary_file.exists()
         content = glossary_file.read_text(encoding="utf-8")
         assert json.loads(content) == ["Notion", "애플", "Figma"]

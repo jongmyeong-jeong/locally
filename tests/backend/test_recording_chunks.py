@@ -13,7 +13,7 @@ from app import db, recording_chunks
 
 @pytest.fixture
 def conn(tmp_home):  # noqa: ARG001 — tmp_home redirects Path.home() to tmp_path
-    """Open an in-process DB (in tmp_home so it doesn't touch the real ~/.locally)."""
+    """Open an in-process DB (in tmp_home so it doesn't touch the real ~/.lonta)."""
     c = db.open_db()
     yield c
     c.close()

@@ -1,8 +1,8 @@
 """Filesystem path helpers + slug/basename utilities.
 
 Layout (platform-agnostic via pathlib.Path.home()):
-  ~/.locally/                 ← locally_home()
-    ├── workspace/            ← workspace_root()
+  ~/.lonta/             ← app_home()
+    ├── data/                 ← data_root()
     │   ├── notes/
     │   │   └── transcripts/
     │   ├── audio/
@@ -43,18 +43,18 @@ def _ensure(p: Path) -> Path:
     return p
 
 
-def workspace_root() -> Path:
-    """~/.locally/workspace/ (created if absent)."""
-    return _ensure(Path.home() / ".locally" / "workspace")
+def data_root() -> Path:
+    """~/.lonta/data/ (created if absent)."""
+    return _ensure(Path.home() / ".lonta" / "data")
 
 
-def locally_home() -> Path:
-    """~/.locally/ (created if absent)."""
-    return _ensure(Path.home() / ".locally")
+def app_home() -> Path:
+    """~/.lonta/ (created if absent)."""
+    return _ensure(Path.home() / ".lonta")
 
 
 def notes_dir() -> Path:
-    return _ensure(workspace_root() / "notes")
+    return _ensure(data_root() / "notes")
 
 
 def transcripts_dir() -> Path:
@@ -62,31 +62,31 @@ def transcripts_dir() -> Path:
 
 
 def audio_dir() -> Path:
-    return _ensure(workspace_root() / "audio")
+    return _ensure(data_root() / "audio")
 
 
 def logs_dir() -> Path:
-    return _ensure(locally_home() / "logs")
+    return _ensure(app_home() / "logs")
 
 
 def prompt_path() -> Path:
-    return workspace_root() / "prompt.json"
+    return data_root() / "prompt.json"
 
 
 def db_path() -> Path:
-    return locally_home() / "db.sqlite"
+    return app_home() / "db.sqlite"
 
 
 def runtime_json_path() -> Path:
-    return locally_home() / "runtime.json"
+    return app_home() / "runtime.json"
 
 
 def setup_json_path() -> Path:
-    return locally_home() / "setup.json"
+    return app_home() / "setup.json"
 
 
 def settings_json_path() -> Path:
-    return locally_home() / "settings.json"
+    return app_home() / "settings.json"
 
 
 def slugify(text: str, *, max_len: int = 50) -> str:

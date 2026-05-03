@@ -35,7 +35,7 @@ def write_transcript_md(
             - ``start_ms`` (int): segment start in milliseconds.
             - ``end_ms`` (int): segment end in milliseconds.
             - ``text`` (str): segment transcription text.
-            Caller is responsible for flattening Groq batch segments
+            Caller is responsible for flattening groq batch segments
             into this list before calling.
         failed_ranges: List of dicts with ``start_ms`` (int) and
             ``end_ms`` (int) for ranges that exhausted all retries.

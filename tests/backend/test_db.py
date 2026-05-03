@@ -19,7 +19,7 @@ from app.db import (
 
 @pytest.fixture(autouse=True)
 def _tmp_home(tmp_path, monkeypatch):
-    """Isolate ~/.locally/db.sqlite per test."""
+    """Isolate ~/.lonta/db.sqlite per test."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     yield tmp_path
 

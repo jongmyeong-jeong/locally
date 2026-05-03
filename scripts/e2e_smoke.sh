@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # AC-14 smoke test (plan §1.5 / §5):
-#   1. locally --help succeeds
-#   2. locally start --no-browser on a free port
+#   1. lonta --help succeeds
+#   2. lonta start --no-browser on a free port
 #   3. GET /api/system/info returns JSON with non-null .os
 #   4. POST /api/notes '{}' returns 201 + title=="untitled"
 #   5. Server terminated cleanly; exit 0
@@ -12,14 +12,14 @@ set -euo pipefail
 log() { printf '[e2e] %s\n' "$*"; }
 fail() { log "FAIL: $*" >&2; exit 1; }
 
-# --- 1. locally help -----------------------------------------------------------
-if ! command -v locally >/dev/null 2>&1; then
-  fail "'locally' not on PATH; run 'pip install -e .' first"
+# --- 1. lonta help -----------------------------------------------------------
+if ! command -v lonta >/dev/null 2>&1; then
+  fail "'lonta' not on PATH; run 'pip install -e .' first"
 fi
 
-log "checking locally --help"
+log "checking lonta --help"
 # Typer apps expose --help out of the box; use it as the CLI availability probe.
-locally --help >/dev/null 2>&1 || fail "locally --help exited non-zero"
+lonta --help >/dev/null 2>&1 || fail "lonta --help exited non-zero"
 
 # --- 2. pick a free port -----------------------------------------------------
 FREE_PORT=$(python3 -c "
@@ -49,8 +49,8 @@ cleanup() {
   fi
 }
 
-log "launching locally start --no-browser"
-locally start --no-browser --host 127.0.0.1 --port "$FREE_PORT" \
+log "launching lonta start --no-browser"
+lonta start --no-browser --host 127.0.0.1 --port "$FREE_PORT" \
   >"$LOGDIR/stdout.log" 2>"$LOGDIR/stderr.log" &
 SERVER_PID=$!
 

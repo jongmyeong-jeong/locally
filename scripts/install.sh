@@ -2,7 +2,7 @@
 set -e
 
 # TODO: 최종 GitHub 주소 확정 후 교체
-REPO_URL="https://github.com/jongmyeong-jeong/locally.git"
+REPO_URL="https://github.com/jongmyeong-jeong/lonta.git"
 
 ok()   { printf "✓ %s\n" "$*"; }
 step() { printf "▸ %s\n" "$*"; }
@@ -33,7 +33,7 @@ if [ -f "$(pwd)/pyproject.toml" ]; then
   ok "Source: current directory"
   PROJECT_DIR="$(pwd)"
 else
-  PROJECT_DIR="$HOME/.locally/source"
+  PROJECT_DIR="$HOME/.lonta/source"
   if [ -d "$PROJECT_DIR/.git" ]; then
     ok "Source: already cloned at $PROJECT_DIR"
     git -C "$PROJECT_DIR" pull --ff-only 2>/dev/null \
@@ -99,21 +99,21 @@ else
   ok "pnpm: enabled"
 fi
 
-# ── locally ───────────────────────────────────────────────────────────────────
-if command -v locally >/dev/null 2>&1; then
-  step "Updating locally..."
+# ── lonta ───────────────────────────────────────────────────────────────────
+if command -v lonta >/dev/null 2>&1; then
+  step "Updating lonta..."
   uv tool install --reinstall "$PROJECT_DIR" \
-    || die "locally update failed" "Check error message and retry: make setup"
-  ok "locally: updated"
+    || die "lonta update failed" "Check error message and retry: make setup"
+  ok "lonta: updated"
 else
-  step "Installing locally..."
+  step "Installing lonta..."
   uv tool install "$PROJECT_DIR" \
-    || die "locally install failed" "Check error message and retry: make setup"
+    || die "lonta install failed" "Check error message and retry: make setup"
   UV_BIN="$(uv tool dir --bin 2>/dev/null || echo "$HOME/.local/bin")"
   export PATH="$UV_BIN:$PATH"
-  ok "locally: installed"
+  ok "lonta: installed"
 fi
 
 # ── run ───────────────────────────────────────────────────────────────────────
 printf "\nhttp://127.0.0.1:54787\n"
-locally start
+lonta start

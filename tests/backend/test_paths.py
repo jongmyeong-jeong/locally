@@ -138,16 +138,16 @@ class TestAudioBasename:
 
 
 class TestPathResolvers:
-    def test_workspace_root_creates_dir(self, _tmp_home):
-        root = mod.workspace_root()
+    def test_data_root_creates_dir(self, _tmp_home):
+        root = mod.data_root()
         assert root.exists()
         assert root.is_dir()
-        assert root == _tmp_home / ".locally" / "workspace"
+        assert root == _tmp_home / ".lonta" / "data"
 
-    def test_locally_home_creates_dir(self, _tmp_home):
-        root = mod.locally_home()
+    def test_app_home_creates_dir(self, _tmp_home):
+        root = mod.app_home()
         assert root.exists()
-        assert root == _tmp_home / ".locally"
+        assert root == _tmp_home / ".lonta"
 
     def test_subdirs_exist(self, _tmp_home):
         for fn in (mod.notes_dir, mod.audio_dir, mod.logs_dir):
@@ -155,11 +155,11 @@ class TestPathResolvers:
             assert p.exists()
             assert p.is_dir()
 
-    def test_db_path_points_under_locally_home(self, _tmp_home):
-        assert mod.db_path() == _tmp_home / ".locally" / "db.sqlite"
+    def test_db_path_points_under_app_home(self, _tmp_home):
+        assert mod.db_path() == _tmp_home / ".lonta" / "db.sqlite"
 
-    def test_runtime_json_path_points_under_locally_home(self, _tmp_home):
-        assert runtime_json_path() == _tmp_home / ".locally" / "runtime.json"
+    def test_runtime_json_path_points_under_app_home(self, _tmp_home):
+        assert runtime_json_path() == _tmp_home / ".lonta" / "runtime.json"
 
 
 # ── runtime.json ────────────────────────────────────────────────────────

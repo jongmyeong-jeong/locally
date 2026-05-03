@@ -10,7 +10,7 @@ export default {
     },
     extend: {
       colors: {
-        // === Locally Design System (DESIGN.md) ===
+        // === lonta Design System (DESIGN.md) ===
         ds: {
           // surfaces — use with bg-ds-*
           page: 'var(--color-bg-page)',
@@ -56,7 +56,7 @@ export default {
         mono: 'var(--font-mono)',
       },
       fontSize: {
-        // Locally type scale (DESIGN.md §3)
+        // lonta type scale (DESIGN.md §3)
         'ds-display':         ['32px', { lineHeight: '1.3', letterSpacing: '-0.03em', fontWeight: '700' }],
         'ds-page-title':      ['24px', { lineHeight: '1.3', letterSpacing: '-0.02em', fontWeight: '700' }],
         'ds-section-heading': ['20px', { lineHeight: '1.3', letterSpacing: '-0.02em', fontWeight: '600' }],
@@ -83,7 +83,7 @@ export default {
         'ds-20': 'var(--space-20)',
       },
       borderRadius: {
-        // Locally
+        // lonta
         'ds-input':   'var(--radius-input)',
         'ds-control': 'var(--radius-control)',
         'ds-card':    'var(--radius-card)',

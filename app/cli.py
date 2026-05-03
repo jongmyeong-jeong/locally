@@ -1,11 +1,11 @@
-"""Typer CLI for locally.
+"""Typer CLI for lonta.
 
 Public CLI surface:
-  locally start [--host --port --no-browser]
+  lonta start [--host --port --no-browser]
 
 AC-2 stdout (plan §4.7 — paste verbatim, '▸' is U+25B8):
   ▸ OS 감지: {os_label}
-  ▸ 데이터 경로: ~/.locally/workspace, ~/.locally
+  ▸ 데이터 경로: ~/.lonta/data, ~/.lonta
   ▸ 서버 시작: http://localhost:{port}
   ▸ 브라우저 오픈 중...
 """
@@ -28,7 +28,7 @@ import typer
 
 from app import paths
 
-app = typer.Typer(help="Locally — 로컬 회의록 생성기", no_args_is_help=True)
+app = typer.Typer(help="lonta — 로컬 회의록 생성기", no_args_is_help=True)
 
 _ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 
@@ -126,14 +126,14 @@ def start(
     """로컬 웹 서버를 시작합니다."""
     import os
 
-    if not os.environ.get("LOCALLY_SKIP_UPDATE"):
+    if not os.environ.get("LONTA_SKIP_UPDATE"):
         from app import updater
         typer.echo(f"{_ARROW} 업데이트 확인 중...")
         if updater.check_and_apply():
             typer.echo(f"{_ARROW} 업데이트 완료 — 다시 실행해주세요")
             raise typer.Exit()
 
-    if not os.environ.get("LOCALLY_SKIP_PREFLIGHT"):
+    if not os.environ.get("LONTA_SKIP_PREFLIGHT"):
         from app import preflight
         preflight.run_preflight(no_browser=no_browser)
     _print_start(host=host, port=port, no_browser=no_browser)
@@ -141,7 +141,7 @@ def start(
 
 def _print_start(*, host: str, port: int, no_browser: bool) -> None:
     typer.echo(f"{_ARROW} OS 감지: {_os_label()}")
-    typer.echo(f"{_ARROW} 데이터 경로: ~/.locally/workspace, ~/.locally")
+    typer.echo(f"{_ARROW} 데이터 경로: ~/.lonta/data, ~/.lonta")
 
     chosen_port, cascade = _resolve_port(host, port)
     all_busy = any("모두 점유" in line for line in cascade)
@@ -158,8 +158,8 @@ def _print_start(*, host: str, port: int, no_browser: bool) -> None:
 
     if all_busy:
         typer.echo(
-            f"{_ARROW} 기존 locally 프로세스 가능성 — lsof -i :54787 / "
-            "작업 관리자에서 locally.exe 종료 권장"
+            f"{_ARROW} 기존 lonta 프로세스 가능성 — lsof -i :54787 / "
+            "작업 관리자에서 lonta.exe 종료 권장"
         )
 
     paths.write_runtime(pid=_pid(), port=chosen_port, started_at=time.time())

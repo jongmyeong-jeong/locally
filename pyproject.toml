@@ -3,9 +3,9 @@ requires = ["hatchling>=1.24", "hatch-build-scripts>=0.0.4"]
 build-backend = "hatchling.build"
 
 [project]
-name = "locally"
+name = "lonta"
 version = "0.1.1"
-description = "음성 녹음 + Groq 전사 (CLI + Local Web)"
+description = "음성 녹음 + groq 전사 (CLI + Local Web)"
 requires-python = ">=3.11"
 authors = [{ name = "jongmyeong" }]
 dependencies = [
@@ -31,7 +31,7 @@ dev = [
 ]
 
 [project.scripts]
-locally = "app.cli:app"
+lonta = "app.cli:app"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]

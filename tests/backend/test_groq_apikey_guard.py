@@ -1,4 +1,4 @@
-"""Tests for Groq API key guard on FastAPI endpoints (Step 6.5).
+"""Tests for groq API key guard on FastAPI endpoints (Step 6.5).
 
 Uses FastAPI TestClient (httpx-based synchronous client).
 Monkey-patches os.environ to control GROQ_API_KEY.
@@ -21,7 +21,7 @@ from app.server import create_app
 
 @pytest.fixture(autouse=True)
 def _isolate_home(tmp_path, monkeypatch):
-    """Redirect ~/.locally to a temp dir so tests don't touch real data."""
+    """Redirect ~/.lonta to a temp dir so tests don't touch real data."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # Also ensure the system-info cache is cold for each test.
     import app.server as server_mod

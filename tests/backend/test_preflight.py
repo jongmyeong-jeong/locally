@@ -81,7 +81,7 @@ class TestCheckFfmpeg:
 
     def test_in_cache_bin(self, _tmp_home, monkeypatch):
         monkeypatch.setattr(shutil, "which", lambda name: None)
-        cache_bin = paths_mod.locally_home() / "bin" / "ffmpeg"
+        cache_bin = paths_mod.app_home() / "bin" / "ffmpeg"
         cache_bin.parent.mkdir(parents=True, exist_ok=True)
         cache_bin.touch()
         cache_bin.chmod(0o755)
@@ -154,7 +154,7 @@ class TestRunUpgrade:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         assert onboarding.run_upgrade() is True
-        assert captured["cmd"] == ["pipx", "upgrade", "locally"]
+        assert captured["cmd"] == ["pipx", "upgrade", "lonta"]
 
     def test_falls_back_to_pip(self, monkeypatch):
         monkeypatch.setattr(shutil, "which", lambda name: None)
@@ -168,4 +168,4 @@ class TestRunUpgrade:
 
         monkeypatch.setattr(subprocess, "run", fake_run)
         assert onboarding.run_upgrade() is True
-        assert captured["cmd"] == [sys.executable, "-m", "pip", "install", "--upgrade", "locally"]
+        assert captured["cmd"] == [sys.executable, "-m", "pip", "install", "--upgrade", "lonta"]

@@ -39,10 +39,10 @@ describe('App router smoke', () => {
     vi.clearAllMocks()
   })
 
-  it('renders Locally brand link', async () => {
+  it('renders Lonta brand link', async () => {
     renderApp(['/notes'])
     await waitFor(() => {
-      expect(screen.getByText('Locally')).toBeInTheDocument()
+      expect(screen.getByText('Lonta')).toBeInTheDocument()
     })
   })
 

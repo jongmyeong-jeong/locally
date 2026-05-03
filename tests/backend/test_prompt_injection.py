@@ -23,10 +23,10 @@ def _isolate_home(tmp_path, monkeypatch):
 
 @pytest.fixture
 def prompt_file(tmp_path) -> Path:
-    """Return the path where prompt.json should live (workspace dir created)."""
-    workspace = tmp_path / ".locally" / "workspace"
-    workspace.mkdir(parents=True)
-    return workspace / "prompt.json"
+    """Return the path where prompt.json should live (data dir created)."""
+    data_dir = tmp_path / ".lonta" / "data"
+    data_dir.mkdir(parents=True)
+    return data_dir / "prompt.json"
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ class TestGroqClientPromptInjection:
 
     def test_prompt_omitted_when_file_absent(self, audio_wav, monkeypatch):
         monkeypatch.setenv("GROQ_API_KEY", "test-key")
-        # No prompt.json — home is tmp_path with no workspace dir
+        # No prompt.json — home is tmp_path with no data dir
 
         mock_client = MagicMock()
         mock_client.audio.transcriptions.create.return_value = self._fake_resp()

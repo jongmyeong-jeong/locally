@@ -2,7 +2,7 @@
 
 Implementation under test lives in app/cli.py:_resolve_port which is the
 pure-function seam for fallback logic — we exercise it with socket binds
-rather than spawning full `locally start` (fast, deterministic, OS-agnostic).
+rather than spawning full `lonta start` (fast, deterministic, OS-agnostic).
 """
 from __future__ import annotations
 

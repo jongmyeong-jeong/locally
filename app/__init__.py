@@ -18,12 +18,12 @@ class _JSONLFormatter(logging.Formatter):
 
 
 def _configure_logger() -> logging.Logger:
-    from app.paths import locally_home
-    log_dir = locally_home() / "logs"
+    from app.paths import app_home
+    log_dir = app_home() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "app.log"
 
-    logger = logging.getLogger("locally")
+    logger = logging.getLogger("lonta")
     if logger.handlers:
         return logger
 

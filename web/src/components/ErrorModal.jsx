@@ -3,7 +3,7 @@ import './ErrorModal.css'
 
 const CONTENT = {
   rate_limit: {
-    title: '오늘 Groq 무료 한도 소진',
+    title: '오늘 groq 무료 한도 소진',
     body: '내일 다시 시도하세요.',
     buttons: (onClose, onStopRecording) => [
       <button
@@ -17,7 +17,7 @@ const CONTENT = {
     ],
   },
   server_error: {
-    title: 'Groq 일시 장애',
+    title: 'groq 일시 장애',
     body: '잠시 후 다시 시도하세요. 진행 중인 녹음은 계속됩니다.',
     buttons: (onClose, onStopRecording) => [
       <button

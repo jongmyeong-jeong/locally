@@ -5,7 +5,7 @@ param()
 $ErrorActionPreference = 'Stop'
 
 # TODO: 최종 GitHub 주소 확정 후 교체
-$RepoUrl = 'https://github.com/jongmyeong-jeong/locally.git'
+$RepoUrl = 'https://github.com/jongmyeong-jeong/lonta.git'
 
 function ok($msg)   { Write-Host "✓ $msg" }
 function step($msg) { Write-Host "▸ $msg" }
@@ -33,7 +33,7 @@ if (Test-Path "pyproject.toml") {
     ok "소스 감지: 현재 디렉토리 사용"
     $ProjectDir = (Get-Location).Path
 } else {
-    $ProjectDir = Join-Path $env:USERPROFILE ".locally\source"
+    $ProjectDir = Join-Path $env:USERPROFILE ".lonta\source"
     if (Test-Path (Join-Path $ProjectDir ".git")) {
         ok "이미 클론됨: $ProjectDir"
         try { git -C $ProjectDir pull --ff-only 2>$null } catch {
@@ -105,22 +105,22 @@ if (Get-Command pnpm -ErrorAction SilentlyContinue) {
     }
 }
 
-# ── locally 설치 ──────────────────────────────────────────────────────────────
-if (Get-Command locally -ErrorAction SilentlyContinue) {
-    ok "이미 설치됨: locally"
+# ── lonta 설치 ──────────────────────────────────────────────────────────────
+if (Get-Command lonta -ErrorAction SilentlyContinue) {
+    ok "이미 설치됨: lonta"
 } else {
-    step "locally 설치 중 (프론트엔드 빌드 포함, 수 분 소요)..."
+    step "lonta 설치 중 (프론트엔드 빌드 포함, 수 분 소요)..."
     try {
         uv tool install $ProjectDir
         $uvBin = uv tool dir --bin 2>$null
         if ($uvBin) { $env:PATH = "$uvBin;$env:PATH" }
-        ok "locally 설치 완료"
+        ok "lonta 설치 완료"
     } catch {
-        die "locally 설치 실패" "오류 메시지 확인 후 재시도: .\scripts\install.ps1"
+        die "lonta 설치 실패" "오류 메시지 확인 후 재시도: .\scripts\install.ps1"
     }
 }
 
 # ── 실행 ─────────────────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "http://127.0.0.1:54787"
-locally start
+lonta start

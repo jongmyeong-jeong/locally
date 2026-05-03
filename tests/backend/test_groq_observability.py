@@ -83,7 +83,7 @@ class TestGroqTranscribeLogging:
         assert str(audio_wav) in str(record.audio_path)
 
     def test_log_has_lang(self, audio_wav, monkeypatch, caplog):
-        monkeypatch.delenv("LOCALLY_LANG", raising=False)
+        monkeypatch.delenv("TRANSCRIPTION_LANG", raising=False)
         with caplog.at_level(logging.INFO, logger="app.groq_client"):
             self._run_transcribe(audio_wav, monkeypatch)
 
@@ -127,7 +127,7 @@ class TestGroqTranscribeLogging:
         assert isinstance(record.audio_sec, float)
 
     def test_log_lang_reflects_env(self, audio_wav, monkeypatch, caplog):
-        monkeypatch.setenv("LOCALLY_LANG", "en")
+        monkeypatch.setenv("TRANSCRIPTION_LANG", "en")
         with caplog.at_level(logging.INFO, logger="app.groq_client"):
             self._run_transcribe(audio_wav, monkeypatch)
 

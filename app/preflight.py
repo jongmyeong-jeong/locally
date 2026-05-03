@@ -1,9 +1,9 @@
-"""Pre-flight checks for `locally start`.
+"""Pre-flight checks for `lonta start`.
 
-Runs once on first launch (detected via ~/.locally/setup.json).
+Runs once on first launch (detected via ~/.lonta/setup.json).
 Subsequent launches are silent unless a warning/error occurs.
 
-Test seam: set LOCALLY_SKIP_PREFLIGHT=1 to bypass entirely (see cli.py).
+Test seam: set LONTA_SKIP_PREFLIGHT=1 to bypass entirely (see cli.py).
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def mark_setup_done() -> None:
 def _current_version() -> str:
     try:
         from importlib.metadata import version
-        return version("locally")
+        return version("lonta")
     except Exception:
         from app import __version__
         return __version__
@@ -66,7 +66,7 @@ def _current_version() -> str:
 def check_ffmpeg() -> CheckResult:
     if shutil.which("ffmpeg"):
         return CheckResult(ok=True, message="ffmpeg found (PATH)")
-    cache_bin = paths.locally_home() / "bin" / "ffmpeg"
+    cache_bin = paths.app_home() / "bin" / "ffmpeg"
     if cache_bin.exists() and os.access(cache_bin, os.X_OK):
         os.environ["PATH"] = f"{cache_bin.parent}{os.pathsep}{os.environ.get('PATH', '')}"
         return CheckResult(ok=True, message="ffmpeg found (cache)")
@@ -87,7 +87,7 @@ def _download_ffmpeg(console) -> bool:
             urllib.request.urlretrieve(url, tmp_zip)
             with zipfile.ZipFile(tmp_zip) as zf:
                 zf.extract("ffmpeg", tmp_dir)
-            dest = paths.locally_home() / "bin" / "ffmpeg"
+            dest = paths.app_home() / "bin" / "ffmpeg"
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(Path(tmp_dir) / "ffmpeg"), dest)
             dest.chmod(0o755)
@@ -118,7 +118,7 @@ def check_version(*, timeout: float = 2.5) -> CheckResult:
     current = _current_version()
     try:
         from packaging.version import Version
-        with urllib.request.urlopen("https://pypi.org/pypi/locally/json", timeout=timeout) as r:
+        with urllib.request.urlopen("https://pypi.org/pypi/lonta/json", timeout=timeout) as r:
             latest = json.loads(r.read())["info"]["version"]
         if Version(latest) > Version(current):
             return CheckResult(
@@ -126,7 +126,7 @@ def check_version(*, timeout: float = 2.5) -> CheckResult:
                 message=f"New version available: {current} → {latest}",
                 detail=latest,
             )
-        return CheckResult(ok=True, message=f"locally {current} is up to date")
+        return CheckResult(ok=True, message=f"lonta {current} is up to date")
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, KeyError):
         return CheckResult(ok=True, message="Checking for updates...", detail="skipped (network)")
 
@@ -151,9 +151,9 @@ def maybe_prompt_upgrade(result: CheckResult, *, console) -> bool:
 
 def run_upgrade() -> bool:
     cmd = (
-        ["pipx", "upgrade", "locally"]
+        ["pipx", "upgrade", "lonta"]
         if shutil.which("pipx")
-        else [sys.executable, "-m", "pip", "install", "--upgrade", "locally"]
+        else [sys.executable, "-m", "pip", "install", "--upgrade", "lonta"]
     )
     return subprocess.run(cmd).returncode == 0
 
@@ -170,7 +170,7 @@ def run_preflight(*, no_browser: bool) -> None:
     first_run = is_first_run()
 
     if first_run:
-        console.print("[bold]Locally — pre-flight check[/bold]")
+        console.print("[bold]lonta — pre-flight check[/bold]")
 
     ensure_ffmpeg(first_run=first_run, console=console)
 

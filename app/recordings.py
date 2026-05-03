@@ -30,7 +30,7 @@ from pathlib import Path
 from typing import BinaryIO
 
 from app.db import create_note, update_note
-from app.paths import audio_basename, audio_dir, locally_home
+from app.paths import app_home, audio_basename, audio_dir
 
 
 class ChunkSeqConflict(Exception):
@@ -74,7 +74,7 @@ _LOCK = threading.Lock()
 
 
 def _session_tmp_path(session_id: str) -> Path:
-    root = locally_home() / "tmp" / "recordings"
+    root = app_home() / "tmp" / "recordings"
     root.mkdir(parents=True, exist_ok=True)
     return root / f"{session_id}.webm"
 

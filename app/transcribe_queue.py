@@ -4,7 +4,7 @@ One SessionTranscribeQueue instance per live recording session drives a single
 asyncio worker task that processes ChunkJob items sequentially.  Module-level
 registry (_QUEUES) maps session_id → queue instance.
 
-Architecture change (Groq migration):
+Architecture change (groq migration):
   - VAD chunk WAV paths are accumulated in a per-session buffer.
   - When cumulative duration >= 60 s, the buffer is flushed: chunks are
     concatenated via audio_concat.concat_wav_chunks() and the resulting
@@ -64,7 +64,7 @@ class ChunkJob:
 
 @dataclass
 class _PendingChunk:
-    """Internal: one accumulated VAD chunk not yet sent to Groq."""
+    """Internal: one accumulated VAD chunk not yet sent to groq."""
 
     chunk_id: int
     seq: int
@@ -244,7 +244,7 @@ class SessionTranscribeQueue:
                 self._queue.task_done()
 
     async def _process_batch(self, batch: _BatchJob) -> None:
-        """Concatenate WAVs, call Groq, handle retries and errors."""
+        """Concatenate WAVs, call groq, handle retries and errors."""
         chunk_ids = [c.chunk_id for c in batch.chunks]
         wav_paths = [Path(c.audio_path) for c in batch.chunks]
         # Declared early so the worker-loop's except path can pass it to
@@ -297,7 +297,7 @@ class SessionTranscribeQueue:
                 )
                 return
 
-            # 4. Call Groq with up to _MAX_NETWORK_RETRIES for network errors.
+            # 4. Call groq with up to _MAX_NETWORK_RETRIES for network errors.
             result = None
             for attempt in range(1, _MAX_NETWORK_RETRIES + 1):
                 try:
@@ -502,7 +502,7 @@ class SessionTranscribeQueue:
     async def _concat_wavs(self, wav_paths: list[Path], batch: _BatchJob) -> Path:
         """Concatenate WAV files in a thread; return path to the batch temp WAV."""
         fd, tmp_path_str = tempfile.mkstemp(
-            prefix=f"locally_batch_{self._session_id}_{batch.seq}_",
+            prefix=f"lonta_batch_{self._session_id}_{batch.seq}_",
             suffix=".wav",
         )
         import os
@@ -598,7 +598,7 @@ def register_chunk_transcribed_callback(cb) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Module-level Groq error callback
+# Module-level groq error callback
 # ---------------------------------------------------------------------------
 # server.py registers a coroutine callback here (in G1.3) so transcribe_queue
 # can push SSE groq_error events without a circular import.
@@ -610,7 +610,7 @@ _on_groq_error = None
 
 
 def register_groq_error_callback(cb) -> None:
-    """Register a coroutine callback invoked on non-retriable Groq errors."""
+    """Register a coroutine callback invoked on non-retriable groq errors."""
     global _on_groq_error
     _on_groq_error = cb
 
@@ -642,9 +642,9 @@ async def create_session_queue(
 ) -> SessionTranscribeQueue:
     """Create and register a queue for session_id; raises if already exists.
 
-    ``model_dir`` is accepted but ignored (Groq migration — no local model).
+    ``model_dir`` is accepted but ignored (groq migration — no local model).
     ``glossary_prompt`` is the legacy name; ``prompt`` is preferred.
-    Both are forwarded to the Groq transcription call as the Whisper hint.
+    Both are forwarded to the groq transcription call as the Whisper hint.
     """
     effective_prompt = prompt if prompt is not None else glossary_prompt
     lock = _get_lock()

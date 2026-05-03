@@ -1,4 +1,4 @@
-"""AC-2 tests: `locally start` stdout contract + --no-browser + root HTML.
+"""AC-2 tests: `lonta start` stdout contract + --no-browser + root HTML.
 
 Spawns the real CLI via subprocess so we exercise the stdout ordering that
 automation scripts and CI rely on. Asserts:
@@ -18,7 +18,7 @@ import pytest
 
 # Regex patterns per plan §5 AC-2 (widened for M8 all-busy case).
 _LINE_1 = re.compile(r"^▸ OS 감지: (Darwin \(arm64\)|Darwin \(x86_64\)|Windows \(x86_64\)|Linux \([^)]+\))$")
-_LINE_2 = re.compile(r"^▸ 데이터 경로: ~/\.locally/workspace, ~/\.locally$")
+_LINE_2 = re.compile(r"^▸ 데이터 경로: ~/\.lonta/data, ~/\.lonta$")
 _LINE_3 = re.compile(r"^▸ 모델 상태: (설치되지 않음|준비됨)$")
 _LINE_4 = re.compile(r"^▸ 서버 시작: http://(127\.0\.0\.1|localhost):(54787|5478[89]|5479[0-6]|[1-9][0-9]{3,4})$")
 _LINE_5 = re.compile(r"^▸ 브라우저 오픈 중\.\.\.$")
@@ -57,10 +57,10 @@ def _wait_until_listening(port: int, timeout: float = 10.0) -> None:
     raise AssertionError(f"server did not become ready on port {port}")
 
 
-class TestLocallyStartStdout:
-    def test_locally_start_stdout_lines(self, spawn_locally_start, free_port):
+class TestBadaScribeStartStdout:
+    def test_lonta_start_stdout_lines(self, spawn_lonta_start, free_port):
         """AC-2: first 4 AC-2 lines (line 5 suppressed by --no-browser)."""
-        proc = spawn_locally_start(free_port)
+        proc = spawn_lonta_start(free_port)
         lines = _read_first_lines_and_wait(proc, 4, timeout=15.0)
         assert _LINE_1.match(lines[0]), f"line 1 mismatch: {lines[0]!r}"
         assert _LINE_2.match(lines[1]), f"line 2 mismatch: {lines[1]!r}"
@@ -69,9 +69,9 @@ class TestLocallyStartStdout:
 
 
 class TestNoBrowserFlag:
-    def test_no_browser_suppresses_line_5(self, spawn_locally_start, free_port):
+    def test_no_browser_suppresses_line_5(self, spawn_lonta_start, free_port):
         """AC-2 minor fix: --no-browser suppresses 브라우저 오픈 중... line."""
-        proc = spawn_locally_start(free_port)  # fixture already passes --no-browser
+        proc = spawn_lonta_start(free_port)  # fixture already passes --no-browser
         lines = _read_first_lines_and_wait(proc, 4, timeout=15.0)
         # After reading 4 lines, there must be NO 5th 브라우저 line emitted
         # before server readiness. We assert the server is listening and that
@@ -104,8 +104,8 @@ class TestNoBrowserFlag:
 
 
 class TestRootReturnsRootDiv:
-    def test_root_html_contains_root_div(self, spawn_locally_start, free_port):
-        proc = spawn_locally_start(free_port)
+    def test_root_html_contains_root_div(self, spawn_lonta_start, free_port):
+        proc = spawn_lonta_start(free_port)
         _read_first_lines_and_wait(proc, 4, timeout=15.0)
         _wait_until_listening(free_port, timeout=10.0)
         # The SPA build output includes `<div id="root">`; if app/static is

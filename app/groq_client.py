@@ -1,9 +1,9 @@
-"""Groq SDK wrapper for audio transcription.
+"""groq SDK wrapper for audio transcription.
 
 Single public function: transcribe_audio().
 
-Reads GROQ_API_KEY and LOCALLY_LANG from env at call time (not import time).
-Loads Whisper prompt from ~/.locally/workspace/prompt.json if present.
+Reads GROQ_API_KEY and TRANSCRIPTION_LANG from env at call time (not import time).
+Loads Whisper prompt from ~/.lonta/data/prompt.json if present.
 
 Schema of prompt.json (single string):
     {"prompt": "..."}
@@ -11,8 +11,8 @@ Schema of prompt.json (single string):
 Exceptions:
     GroqTranscriptionError  — base class for all errors raised here
     GroqApiKeyMissing       — GROQ_API_KEY not set
-    GroqRateLimitError      — HTTP 429 from Groq
-    GroqServerError         — HTTP 5xx from Groq
+    GroqRateLimitError      — HTTP 429 from groq
+    GroqServerError         — HTTP 5xx from groq
     GroqNetworkError        — connection / timeout failures
 """
 from __future__ import annotations
@@ -47,11 +47,11 @@ class GroqApiKeyMissing(GroqTranscriptionError):
 
 
 class GroqRateLimitError(GroqTranscriptionError):
-    """Groq API returned HTTP 429 (rate limit exceeded)."""
+    """groq API returned HTTP 429 (rate limit exceeded)."""
 
 
 class GroqServerError(GroqTranscriptionError):
-    """Groq API returned an HTTP 5xx error."""
+    """groq API returned an HTTP 5xx error."""
 
 
 class GroqNetworkError(GroqTranscriptionError):
@@ -59,7 +59,7 @@ class GroqNetworkError(GroqTranscriptionError):
 
 
 class GroqClientError(GroqTranscriptionError):
-    """Groq API returned an unexpected 4xx error (not 401 or 429)."""
+    """groq API returned an unexpected 4xx error (not 401 or 429)."""
 
 
 # ---------------------------------------------------------------------------
@@ -111,18 +111,18 @@ def transcribe_audio(
     language: str | None = None,
     prompt: str | None = None,
 ) -> TranscribeResult:
-    """Call Groq Whisper API for a single audio file.
+    """Call groq Whisper API for a single audio file.
 
     Parameters
     ----------
     audio_path:
         Path to the WAV (or other audio) file to transcribe.
     language:
-        BCP-47 language code. If None, falls back to LOCALLY_LANG env var
-        (default: "ko"). Allowed values: "ko", "en".
+        BCP-47 language code. If None, falls back to TRANSCRIPTION_LANG env var
+        (default: "ko").
     prompt:
         Optional Whisper conditioning prompt. If None, the module loads
-        ~/.locally/workspace/prompt.json automatically.
+        ~/.lonta/data/prompt.json automatically.
 
     Returns
     -------
@@ -143,7 +143,7 @@ def transcribe_audio(
             "Set it before starting the server."
         )
 
-    lang = language or os.environ.get("LOCALLY_LANG", "ko")
+    lang = language or os.environ.get("TRANSCRIPTION_LANG", "ko")
 
     # Resolve prompt: explicit argument takes precedence over file.
     if prompt is None:
@@ -171,25 +171,25 @@ def transcribe_audio(
             resp = client.audio.transcriptions.create(**call_kwargs)
 
     except _groq_module.RateLimitError as exc:
-        raise GroqRateLimitError(f"Groq rate limit exceeded: {exc}") from exc
+        raise GroqRateLimitError(f"groq rate limit exceeded: {exc}") from exc
     except _groq_module.APIStatusError as exc:
         if exc.status_code >= 500:
             raise GroqServerError(
-                f"Groq server error {exc.status_code}: {exc}"
+                f"groq server error {exc.status_code}: {exc}"
             ) from exc
         if exc.status_code == 401:
             raise GroqApiKeyMissing(
-                f"Groq API key is invalid or missing (HTTP 401): {exc}"
+                f"groq API key is invalid or missing (HTTP 401): {exc}"
             ) from exc
         raise GroqClientError(
-            f"Groq client error {exc.status_code}: {exc}"
+            f"groq client error {exc.status_code}: {exc}"
         ) from exc
     except (
         httpx.ConnectError,
         httpx.TimeoutException,
         _groq_module.APIConnectionError,
     ) as exc:
-        raise GroqNetworkError(f"Groq network error: {exc}") from exc
+        raise GroqNetworkError(f"groq network error: {exc}") from exc
 
     duration = time.monotonic() - t_start
 

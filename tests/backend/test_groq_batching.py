@@ -1,7 +1,7 @@
 """Tests for app/transcribe_queue.py — 60s batch accumulation (Step 6.3).
 
 Mocks: groq_client.transcribe_audio, audio_concat.concat_wav_chunks, db, recording_chunks.
-No real Groq calls or file I/O.
+No real groq calls or file I/O.
 """
 from __future__ import annotations
 

@@ -1,29 +1,29 @@
-# Locally
+# Lonta
 
-groq Whisper API 기반 음성 전사 → Markdown 다운로드
+A local web app for speech transcription powered by the groq Whisper API.
 
-## 빠른 시작
+## Quick start
 
 ```bash
-make setup                       # 의존성 설치
-cp .env.example .env             # GROQ_API_KEY 입력
-make start                       # 서버 실행 + 브라우저 오픈
+make setup                       # Install dependencies
+cp .env.example .env             # Set your GROQ_API_KEY
+make start                       # Run the server and open the browser
 ```
 
-[console.groq.com](https://console.groq.com)에서 API Key 발급
+Get an API key at [console.groq.com](https://console.groq.com).
 
-## make 명령어
+## make commands
 
-| 명령 | 동작 |
+| Command | What it does |
 |---|---|
-| `make help` | 명령어 목록 |
-| `make setup` | 의존성 설치 (Python + Web) |
-| `make start` | 서버 실행 + 브라우저 자동 오픈 |
-| `make smoke` | 실제 Groq API 호출 검증 |
+| `make help` | Show the command list |
+| `make setup` | Install dependencies (Python + Web) |
+| `make start` | Run the server and auto-open the browser |
+| `make smoke` | Verify a real groq API call |
 
-## 환경 변수
+## Environment variables
 
-| 변수 | 필수 | 기본값 |
+| Variable | Required | Default |
 |---|---|---|
 | `GROQ_API_KEY` | ✅ | — |
-| `LOCALLY_LANG` | | `ko` (`ko`/`en`) |
+| `TRANSCRIPTION_LANG` | | `ko` |

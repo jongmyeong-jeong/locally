@@ -1,10 +1,10 @@
-"""locally start 실행 시 원격 저장소 변경을 감지하고 자동 업데이트."""
+"""lonta start 실행 시 원격 저장소 변경을 감지하고 자동 업데이트."""
 from __future__ import annotations
 
 import subprocess
 from pathlib import Path
 
-_SOURCE_DIR = Path.home() / ".locally" / "source"
+_SOURCE_DIR = Path.home() / ".lonta" / "source"
 
 
 def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:

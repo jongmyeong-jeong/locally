@@ -1,6 +1,6 @@
 """Tests for app/groq_client.py (Step 6.2).
 
-All tests mock the Groq SDK — no real API calls are made.
+All tests mock the groq SDK — no real API calls are made.
 """
 from __future__ import annotations
 
@@ -29,12 +29,12 @@ from app.groq_client import (
 
 
 def _make_fake_response(status_code: int = 200) -> httpx.Response:
-    """Build a minimal httpx.Response for Groq exception construction."""
+    """Build a minimal httpx.Response for groq exception construction."""
     return httpx.Response(status_code, request=httpx.Request("POST", "https://api.groq.com"))
 
 
 def _fake_verbose_json(text: str = "안녕하세요", segments=None):
-    """Return a fake Groq transcription response namespace."""
+    """Return a fake groq transcription response namespace."""
     if segments is None:
         segments = [
             SimpleNamespace(start=0.0, end=1.5, text="안녕하세요"),
@@ -226,9 +226,9 @@ class TestPromptLoading:
         monkeypatch.setenv("GROQ_API_KEY", "test-key")
 
         # Write prompt.json inside the sandboxed home
-        workspace = tmp_path / ".locally" / "workspace"
-        workspace.mkdir(parents=True)
-        (workspace / "prompt.json").write_text(
+        data_dir = tmp_path / ".lonta" / "data"
+        data_dir.mkdir(parents=True)
+        (data_dir / "prompt.json").write_text(
             json.dumps({"prompt": "Korean meeting vocabulary"}), encoding="utf-8"
         )
 
@@ -245,9 +245,9 @@ class TestPromptLoading:
     def test_explicit_prompt_overrides_file(self, audio_wav, monkeypatch, tmp_path):
         monkeypatch.setenv("GROQ_API_KEY", "test-key")
 
-        workspace = tmp_path / ".locally" / "workspace"
-        workspace.mkdir(parents=True)
-        (workspace / "prompt.json").write_text(
+        data_dir = tmp_path / ".lonta" / "data"
+        data_dir.mkdir(parents=True)
+        (data_dir / "prompt.json").write_text(
             json.dumps({"prompt": "from file"}), encoding="utf-8"
         )
 
@@ -283,7 +283,7 @@ class TestPromptLoading:
 class TestLanguageDefaults:
     def test_default_language_is_ko(self, audio_wav, monkeypatch):
         monkeypatch.setenv("GROQ_API_KEY", "test-key")
-        monkeypatch.delenv("LOCALLY_LANG", raising=False)
+        monkeypatch.delenv("TRANSCRIPTION_LANG", raising=False)
 
         fake_resp = _fake_verbose_json()
         mock_client = MagicMock()
@@ -295,9 +295,9 @@ class TestLanguageDefaults:
         call_kwargs = mock_client.audio.transcriptions.create.call_args[1]
         assert call_kwargs["language"] == "ko"
 
-    def test_locally_lang_env_respected(self, audio_wav, monkeypatch):
+    def test_transcription_lang_env_respected(self, audio_wav, monkeypatch):
         monkeypatch.setenv("GROQ_API_KEY", "test-key")
-        monkeypatch.setenv("LOCALLY_LANG", "en")
+        monkeypatch.setenv("TRANSCRIPTION_LANG", "en")
 
         fake_resp = _fake_verbose_json()
         mock_client = MagicMock()
@@ -311,7 +311,7 @@ class TestLanguageDefaults:
 
     def test_explicit_language_overrides_env(self, audio_wav, monkeypatch):
         monkeypatch.setenv("GROQ_API_KEY", "test-key")
-        monkeypatch.setenv("LOCALLY_LANG", "ko")
+        monkeypatch.setenv("TRANSCRIPTION_LANG", "ko")
 
         fake_resp = _fake_verbose_json()
         mock_client = MagicMock()

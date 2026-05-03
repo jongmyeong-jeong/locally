@@ -25,7 +25,7 @@ dist/
 web/node_modules/
 app/static/
 
-# Locally downloaded toolchain binaries
+# Lonta downloaded toolchain binaries
 bin/
 
 # Local AI/agent files

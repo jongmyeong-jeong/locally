@@ -2,7 +2,7 @@
 
 Implements ``detect_speech_timestamps`` per the reference spec:
   - copybara-note: ``docs/spec/03-transcription.md`` §82-100 (authoritative parameters)
-  - locally plan:  ``.omc/plans/consensus-transcription-progress-vad.md`` §2.3, §2.9
+  - lonta plan:  ``.omc/plans/consensus-transcription-progress-vad.md`` §2.3, §2.9
 
 Used by the mlx-whisper path in ``app/transcribe.py`` to build a
 ``--clip-timestamps`` argument. On "no speech" / "skip" conditions the
@@ -175,8 +175,8 @@ def detect_speech_timestamps(
 
 
 def _debug_log(*, intervals: int, speech_ratio: float, threshold: float) -> None:
-    """Emit one line to stderr when LOCALLY_DEBUG=1 (§2.9 observability stub)."""
-    if os.environ.get("LOCALLY_DEBUG") != "1":
+    """Emit one line to stderr when LONTA_DEBUG=1 (§2.9 observability stub)."""
+    if os.environ.get("LONTA_DEBUG") != "1":
         return
     print(
         f"[vad] intervals={intervals} "

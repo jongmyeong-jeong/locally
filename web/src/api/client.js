@@ -206,7 +206,7 @@ const finalizeRecording = (id, body = {}, handlers = undefined) => {
 
 // Transcript SSE helper for real-time transcription display (Phase 3).
 // Opens a GET EventSource to the per-recording transcript-stream endpoint.
-// handlers: { onChunk?(data), onEnd?(data), onGroqError?(data), onError?(e) }
+// handlers: { onChunk?(data), onEnd?(data), onGroqError?(data), onError?(e) } — onGroqError fires on groq SSE errors
 // Returns a dispose function: () => es.close()
 export function transcriptStream(recordingId, handlers = {}) {
   const es = new EventSource(

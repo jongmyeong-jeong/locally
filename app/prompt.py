@@ -1,7 +1,7 @@
 """Prompt injection persistence.
 
-Source file: ~/.locally/workspace/prompt.json (UTF-8 JSON object).
-Format: {"prompt": "..."} — a single string injected into Groq transcription calls.
+Source file: ~/.lonta/data/prompt.json (UTF-8 JSON object).
+Format: {"prompt": "..."} — a single string injected into groq transcription calls.
 
 Backward compatibility: if the file contains a JSON array of strings (old glossary.json
 format), the terms are joined with ", " and treated as the prompt value. The file is

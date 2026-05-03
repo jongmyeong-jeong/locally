@@ -1,4 +1,4 @@
-"""FastAPI app for locally.
+"""FastAPI app for lonta.
 
 Serves the static SPA (built into app/static/) and the /api/* routes listed in
 plan §4.2. Same-origin; no CORS; all SSE emitters add:
@@ -161,7 +161,7 @@ async def _push_chunk_transcribed(
 # creating a circular import.
 transcribe_queue.register_chunk_transcribed_callback(_push_chunk_transcribed)
 
-# SSE event name for Groq errors (rate_limit, server_error, etc.)
+# SSE event name for groq errors (rate_limit, server_error, etc.)
 _GROQ_ERROR_SSE_FIELD = "groq_error"
 
 
@@ -336,7 +336,7 @@ class RecordingFinalizeJSON(BaseModel):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="locally", version="0.1.0")
+    app = FastAPI(title="lonta", version="0.1.0")
 
     # Request-logging middleware (JSONL logger configured in app/__init__.py).
     @app.middleware("http")
@@ -615,7 +615,7 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------------
     @app.post("/api/recordings", status_code=status.HTTP_201_CREATED)
     async def create_recording(body: RecordingStartJSON | None = None) -> JSONResponse:
-        # 1. Groq API key check — return 503 when GROQ_API_KEY is missing.
+        # 1. groq API key check — return 503 when GROQ_API_KEY is missing.
         if not _groq_api_key_set():
             return JSONResponse(
                 status_code=503,

@@ -16,7 +16,7 @@ from app.db import create_note, get_note, migrate, migrate_stuck_recordings
 
 @pytest.fixture(autouse=True)
 def _tmp_home(tmp_path, monkeypatch):
-    """Isolate ~/.locally per test — mirrors test_db.py pattern."""
+    """Isolate ~/.lonta per test — mirrors test_db.py pattern."""
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     yield tmp_path
 
