@@ -5,20 +5,20 @@ build-backend = "hatchling.build"
 [project]
 name = "locally"
 version = "0.1.1"
-description = "로컬 음성 전사 + 회의록 요약 (CLI + Local Web)"
-requires-python = ">=3.10"
+description = "음성 녹음 + Groq 전사 (CLI + Local Web)"
+requires-python = ">=3.11"
 authors = [{ name = "jongmyeong" }]
 dependencies = [
   "typer>=0.12",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
-  "huggingface_hub>=0.24",
+  "groq>=0.12",
   "numpy>=1.26",
+  "scipy>=1.12",
   "python-multipart>=0.0.9",
-  "mlx-whisper>=0.4; sys_platform == 'darwin'",
-  "faster-whisper>=1.0; sys_platform != 'darwin'",
   "rich>=13.0",
   "packaging>=21.0",
+  "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]
@@ -27,6 +27,7 @@ dev = [
   "pytest-cov>=5.0",
   "pytest-asyncio>=0.23",
   "httpx>=0.27",
+  "ruff>=0.15.11",
 ]
 
 [project.scripts]
@@ -45,7 +46,3 @@ commands = [
   "cd web && pnpm install --frozen-lockfile && pnpm build",
 ]
 
-[dependency-groups]
-dev = [
-    "ruff>=0.15.11",
-]

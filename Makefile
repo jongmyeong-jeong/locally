@@ -1,46 +1,20 @@
-.PHONY: setup start dev dev-backend dev-web build build-web test test-web lint
+.DEFAULT_GOAL := help
+.PHONY: help setup start smoke
+
+help:
+	@echo ""
+	@echo "Locally — Groq 음성 전사"
+	@echo ""
+	@echo "  make setup        의존성 설치 (Python + Web)"
+	@echo "  make start        서버 실행 + 브라우저 자동 오픈"
+	@echo "  make smoke        실제 Groq API 호출 검증 (.env 키 필요)"
+	@echo ""
 
 setup:
 	@sh scripts/install.sh
 
 start:
-	@command -v locally >/dev/null 2>&1 || { \
-	  printf "\n"; \
-	  printf "  ⚠ locally 명령어가 아직 설치되지 않았어요.\n"; \
-	  printf "\n"; \
-	  printf "    설치하려면 먼저 아래 명령을 실행해주세요:\n"; \
-	  printf "\n"; \
-	  printf "      make setup\n"; \
-	  printf "\n"; \
-	  printf "    자세한 내용은 README.md 를 참고하세요.\n"; \
-	  printf "\n"; \
-	  exit 1; \
-	}
-	@locally start
+	@uv run locally start
 
-dev-backend:
-	@uv run uvicorn app.server:app --reload --host 0.0.0.0 --port 8000
-
-dev-web:
-	@cd web && pnpm dev
-
-dev:
-	@trap 'kill 0' INT; \
-	  $(MAKE) dev-backend & \
-	  $(MAKE) dev-web & \
-	  wait
-
-build:
-	@uv build
-
-build-web:
-	@cd web && pnpm build
-
-test:
-	@uv run pytest tests/ -v
-
-test-web:
-	@cd web && pnpm test
-
-lint:
-	@uv run ruff check app/ tests/
+smoke:
+	@uv run python -c "from pathlib import Path; from dotenv import load_dotenv; load_dotenv(Path('.env')); import time; from app.groq_client import transcribe_audio; f = Path('tests/fixtures/test_30s.mp3'); print(f'fixture: {f} ({f.stat().st_size} bytes)'); t0 = time.time(); r = transcribe_audio(f, language='ko'); dt = time.time() - t0; print(f'OK in {dt:.2f}s — text={r[\"text\"]!r}, segments={len(r[\"segments\"])}')"

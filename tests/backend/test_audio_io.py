@@ -107,23 +107,23 @@ class TestLoadPcm16kMonoErrorPath:
     def test_raises_transcription_error_on_invalid_file(self, tmp_path):
         """load_pcm_16k_mono raises TranscriptionError when the file is not valid audio."""
         from app.audio_io import load_pcm_16k_mono
-        from app.transcribe import TranscriptionError
+        from app.audio_io import AudioIOError
 
         not_audio = tmp_path / "not_audio.wav"
         not_audio.write_text("not audio content")
 
-        with pytest.raises(TranscriptionError):
+        with pytest.raises(AudioIOError):
             load_pcm_16k_mono(str(not_audio))
 
     def test_error_message_contains_ffmpeg_stderr(self, tmp_path):
-        """TranscriptionError message includes ffmpeg diagnostic output (non-empty stderr)."""
+        """AudioIOError message includes ffmpeg diagnostic output (non-empty stderr)."""
         from app.audio_io import load_pcm_16k_mono
-        from app.transcribe import TranscriptionError
+        from app.audio_io import AudioIOError
 
         not_audio = tmp_path / "not_audio.wav"
         not_audio.write_text("not audio content")
 
-        with pytest.raises(TranscriptionError) as exc_info:
+        with pytest.raises(AudioIOError) as exc_info:
             load_pcm_16k_mono(str(not_audio))
 
         message = str(exc_info.value)
@@ -154,5 +154,5 @@ class TestMissingFfmpeg:
         )
     )
     def test_raises_when_ffmpeg_missing(self, monkeypatch):
-        """TranscriptionError is raised with a clear message when ffmpeg is absent."""
+        """AudioIOError is raised with a clear message when ffmpeg is absent."""
         pass

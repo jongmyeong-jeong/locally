@@ -1,37 +1,100 @@
-"""Per-session async transcription queue.
+"""Per-session async transcription queue with 60-second batch accumulation.
 
 One SessionTranscribeQueue instance per live recording session drives a single
 asyncio worker task that processes ChunkJob items sequentially.  Module-level
 registry (_QUEUES) maps session_id → queue instance.
 
-State machine mirrored from recording_chunks:
+Architecture change (Groq migration):
+  - VAD chunk WAV paths are accumulated in a per-session buffer.
+  - When cumulative duration >= 60 s, the buffer is flushed: chunks are
+    concatenated via audio_concat.concat_wav_chunks() and the resulting
+    batch WAV is sent to groq_client.transcribe_audio().
+  - On drain() (recording end), any remaining < 60 s buffer is flushed as one
+    final batch.
+  - Each completed batch creates ONE recording_chunks row (start_ms = first
+    VAD chunk's start_ms, end_ms = last VAD chunk's end_ms).
+  - Retry policy: GroqNetworkError → retry same batch up to 5 times at 60 s
+    fixed intervals.  429/5xx → immediate SSE error, mark failed, continue.
+
+State machine (batch level):
   queued → transcribing → success
-  queued → transcribing → retry  → transcribing → success
-  queued → transcribing → retry  → transcribing → failed
+  queued → transcribing → (network retry x5) → failed
+  queued → transcribing → failed  (rate_limit / server_error)
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+import tempfile
+from contextlib import closing
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from app import db, recording_chunks, transcribe
+from app import audio_concat, db, groq_client, recording_chunks
+from app.groq_client import (
+    GroqApiKeyMissing,
+    GroqClientError,
+    GroqNetworkError,
+    GroqRateLimitError,
+    GroqServerError,
+)
 
 logger = logging.getLogger(__name__)
 
 # Sentinel pushed by stop() to signal the worker to exit.
 _SENTINEL = None
 
+# Max retries for GroqNetworkError.
+_MAX_NETWORK_RETRIES = 5
+# Fixed sleep between network retries (seconds).
+_NETWORK_RETRY_SLEEP = 60
+# Minimum accumulated duration before flushing a batch (milliseconds).
+_BATCH_THRESHOLD_MS = 60_000
+
 
 @dataclass
 class ChunkJob:
-    chunk_id: int       # recording_chunks.id (already inserted with status='queued')
+    chunk_id: int  # recording_chunks.id (already inserted with status='queued')
     note_id: str
     seq: int
     start_ms: int
     end_ms: int
-    audio_path: str     # path to the per-chunk webm/pcm temp file
+    audio_path: str  # path to the per-chunk WAV temp file
+
+
+@dataclass
+class _PendingChunk:
+    """Internal: one accumulated VAD chunk not yet sent to Groq."""
+
+    chunk_id: int
+    seq: int
+    start_ms: int
+    end_ms: int
+    audio_path: str
+
+
+@dataclass
+class _BatchJob:
+    """A collection of VAD chunks that will be concatenated and transcribed together."""
+
+    chunks: list[_PendingChunk] = field(default_factory=list)
+
+    @property
+    def start_ms(self) -> int:
+        return self.chunks[0].start_ms
+
+    @property
+    def end_ms(self) -> int:
+        return self.chunks[-1].end_ms
+
+    @property
+    def duration_ms(self) -> int:
+        return self.end_ms - self.start_ms
+
+    @property
+    def seq(self) -> int:
+        """Batch seq == seq of the first VAD chunk in the batch."""
+        return self.chunks[0].seq
 
 
 class SessionTranscribeQueue:
@@ -41,25 +104,36 @@ class SessionTranscribeQueue:
         self,
         session_id: str,
         note_id: str,
-        model_dir: str | None,
-        glossary_prompt: str | None,
+        prompt: str | None,
     ) -> None:
         self._session_id = session_id
         self._note_id = note_id
-        self._model_dir = model_dir
-        self._glossary_prompt = glossary_prompt
+        self._prompt = prompt
 
-        self._queue: asyncio.Queue[ChunkJob | None] = asyncio.Queue()
+        # Internal queue receives _BatchJob items (pre-assembled by push())
+        # or _SENTINEL.
+        self._queue: asyncio.Queue[_BatchJob | None] = asyncio.Queue()
         self._worker_task: asyncio.Task | None = None
 
-        # Drain tracking: _active_jobs counts jobs not yet in a terminal state.
-        # Incremented on push(); decremented only when status reaches 'success'
-        # or 'failed' (not 'retry', which re-queues the job).
+        # Drain tracking: _active_jobs counts batches not yet in a terminal state.
+        # Incremented when a batch is dispatched to the queue; decremented on
+        # success or final failure.
         self._active_jobs: int = 0
         self._idle_event: asyncio.Event = asyncio.Event()
         self._idle_event.set()  # starts idle (0 active jobs)
 
+        # Lock protecting shared mutable state: _pending_chunks,
+        # _accumulated_duration_ms, _active_jobs, and _idle_event.
+        self._state_lock: asyncio.Lock = asyncio.Lock()
+
         self._failed_ranges: list[dict] = []
+
+        # Accumulator state: pending VAD chunks not yet batched.
+        self._pending_chunks: list[_PendingChunk] = []
+        self._accumulated_duration_ms: int = 0
+
+        # Batch sequence counter (incremented per dispatched batch).
+        self._batch_seq: int = 0
 
     # ------------------------------------------------------------------
     # Public API
@@ -71,17 +145,40 @@ class SessionTranscribeQueue:
             self._worker_task = asyncio.create_task(self._worker_loop())
 
     async def push(self, job: ChunkJob) -> None:
-        """Enqueue a chunk job.  Returns immediately."""
-        self._active_jobs += 1
-        self._idle_event.clear()
-        await self._queue.put(job)
+        """Accumulate a VAD chunk.  Dispatches a batch when threshold is reached."""
+        duration_ms = job.end_ms - job.start_ms
+        pending = _PendingChunk(
+            chunk_id=job.chunk_id,
+            seq=job.seq,
+            start_ms=job.start_ms,
+            end_ms=job.end_ms,
+            audio_path=job.audio_path,
+        )
+        batch_to_dispatch = None
+        async with self._state_lock:
+            self._pending_chunks.append(pending)
+            self._accumulated_duration_ms += duration_ms
+
+            if self._accumulated_duration_ms >= _BATCH_THRESHOLD_MS:
+                # Pre-collect the batch under lock; enqueue outside lock to
+                # avoid holding the lock across await queue.put.
+                batch_to_dispatch = self._flush_pending_locked()
+
+        if batch_to_dispatch is not None:
+            await self._queue.put(batch_to_dispatch)
 
     async def drain(self) -> None:
-        """Block until ALL jobs reach a terminal state (success or failed).
+        """Flush remaining pending chunks, then block until all batches are done.
 
-        Re-queued retry jobs also count — drain does NOT return the moment
-        the queue is momentarily empty; it waits until _active_jobs == 0.
+        Called on recording end.  Flushes any < 60 s remainder as a final batch,
+        then waits until _active_jobs == 0.
         """
+        batch_to_dispatch = None
+        async with self._state_lock:
+            if self._pending_chunks:
+                batch_to_dispatch = self._flush_pending_locked()
+        if batch_to_dispatch is not None:
+            await self._queue.put(batch_to_dispatch)
         await self._idle_event.wait()
 
     async def stop(self) -> None:
@@ -91,141 +188,387 @@ class SessionTranscribeQueue:
             await self._worker_task
 
     @property
+    def prompt(self) -> str | None:
+        """Whisper conditioning prompt passed at queue creation time."""
+        return self._prompt
+
+    # Keep old property name for backward-compat with any server.py references.
+    @property
     def glossary_prompt(self) -> str | None:
-        """Glossary prompt string passed at queue creation time."""
-        return self._glossary_prompt
+        return self._prompt
 
     @property
     def failed_ranges(self) -> list[dict]:
-        """List of {seq, start_ms, end_ms} for chunks that ended in 'failed'."""
+        """List of {start_ms, end_ms} for batches that ended in 'failed'."""
         return list(self._failed_ranges)
+
+    # ------------------------------------------------------------------
+    # Accumulator flush
+    # ------------------------------------------------------------------
+
+    def _flush_pending_locked(self) -> _BatchJob:
+        """Build and return a _BatchJob from pending chunks, updating shared state.
+
+        MUST be called with self._state_lock held.  Does not enqueue; caller is
+        responsible for await self._queue.put(batch) after releasing the lock.
+        """
+        self._batch_seq += 1
+        batch = _BatchJob(chunks=list(self._pending_chunks))
+        self._pending_chunks.clear()
+        self._accumulated_duration_ms = 0
+        self._active_jobs += 1
+        self._idle_event.clear()
+        return batch
 
     # ------------------------------------------------------------------
     # Internal worker
     # ------------------------------------------------------------------
 
     async def _worker_loop(self) -> None:
-        """Pull jobs from the queue and process them one at a time."""
+        """Pull batch jobs from the queue and process them one at a time."""
         while True:
-            job = await self._queue.get()
-            if job is _SENTINEL:
+            batch = await self._queue.get()
+            if batch is _SENTINEL:
                 self._queue.task_done()
                 break
             try:
-                await self._process(job)
+                await self._process_batch(batch)
             except Exception:
-                # Unexpected error — mark as failed so drain can unblock.
                 logger.exception(
-                    "Unexpected error processing chunk %d (seq=%d)",
-                    job.chunk_id,
-                    job.seq,
+                    "Unexpected error processing batch seq=%d session=%s",
+                    batch.seq,
+                    self._session_id,
                 )
-                self._mark_terminal_failed(job)
+                await self._mark_batch_failed(batch, error_type="unexpected_error")
             finally:
                 self._queue.task_done()
 
-    async def _process(self, job: ChunkJob) -> None:
-        # 1. Mark as transcribing.
-        conn = db.open_db()
-        try:
-            recording_chunks.update_chunk_status(conn, job.chunk_id, "transcribing")
-        finally:
-            conn.close()
+    async def _process_batch(self, batch: _BatchJob) -> None:
+        """Concatenate WAVs, call Groq, handle retries and errors."""
+        chunk_ids = [c.chunk_id for c in batch.chunks]
+        wav_paths = [Path(c.audio_path) for c in batch.chunks]
+        # Declared early so the worker-loop's except path can pass it to
+        # _mark_batch_failed even when the insert below fails (M3).
+        batch_chunk_id: int | None = None
+        # Declared early so the try/finally safety net can clean it up on any
+        # unexpected exception that bypasses the per-error _cleanup() calls (M6).
+        batch_wav: Path | None = None
 
-        # 2. Run transcription in a thread (blocking call).
-        text: str | None = None
-        error: Exception | None = None
         try:
-            text, _segments = await asyncio.to_thread(
-                transcribe.run,
-                job.audio_path,
-                model_dir=self._model_dir,
-                prompt=self._glossary_prompt,
-                profile="chunk",
-            )
-        except transcribe.TranscriptionError as exc:
-            error = exc
-            logger.warning(
-                "TranscriptionError for chunk %d (seq=%d): %s",
-                job.chunk_id,
-                job.seq,
-                exc,
-            )
+            # 1. Insert a single recording_chunks row for this batch.
+            with closing(db.open_db()) as conn:
+                batch_chunk_id = recording_chunks.insert_chunk(
+                    conn,
+                    self._note_id,
+                    batch.seq,
+                    batch.start_ms,
+                    batch.end_ms,
+                )
+                recording_chunks.update_chunk_status(conn, batch_chunk_id, "transcribing")
 
-        # 3a. Success (non-empty text).
-        if error is None and text is not None and text.strip() != "":
-            conn = db.open_db()
+            # 2. Mark original VAD chunk rows as transcribing (best-effort; they
+            #    were inserted by server.py before push() was called).
+            for cid in chunk_ids:
+                try:
+                    with closing(db.open_db()) as conn:
+                        recording_chunks.update_chunk_status(conn, cid, "transcribing")
+                except Exception:  # noqa: BLE001
+                    pass
+
+            # 3. Concatenate WAV files into a temp file.
             try:
-                recording_chunks.update_chunk_status(conn, job.chunk_id, "success", text)
-            finally:
-                conn.close()
-            # Best-effort temp file cleanup.
-            Path(job.audio_path).unlink(missing_ok=True)
-            self._decrement_active()
-            # Push chunk_transcribed event to SSE queue if a callback is registered.
+                batch_wav = await self._concat_wavs(wav_paths, batch)
+            except ValueError as exc:
+                # Format drift — treat as a non-retriable client error.
+                logger.error(
+                    "WAV concat failed for batch seq=%d session=%s: %s",
+                    batch.seq,
+                    self._session_id,
+                    exc,
+                )
+                await self._push_groq_error_event(
+                    "concat_error",
+                    {"batch_seq": batch.seq, "detail": str(exc)},
+                )
+                await self._mark_batch_failed(
+                    batch,
+                    batch_chunk_id=batch_chunk_id,
+                    error_type="concat_error",
+                )
+                return
+
+            # 4. Call Groq with up to _MAX_NETWORK_RETRIES for network errors.
+            result = None
+            for attempt in range(1, _MAX_NETWORK_RETRIES + 1):
+                try:
+                    result = await asyncio.to_thread(
+                        groq_client.transcribe_audio,
+                        batch_wav,
+                        prompt=self._prompt,
+                    )
+                    break  # success
+
+                except GroqNetworkError as exc:
+                    logger.warning(
+                        "GroqNetworkError batch seq=%d attempt=%d/%d session=%s: %s",
+                        batch.seq,
+                        attempt,
+                        _MAX_NETWORK_RETRIES,
+                        self._session_id,
+                        exc,
+                    )
+                    if attempt < _MAX_NETWORK_RETRIES:
+                        await asyncio.sleep(_NETWORK_RETRY_SLEEP)
+                    else:
+                        # All retries exhausted.
+                        # Per spec C-Error C2: 5x network retry failure produces NO
+                        # user-facing notification.  Failure is recorded only in the
+                        # .md file at finalize time via `failed_ranges`.
+                        logger.error(
+                            "Batch seq=%d failed after %d retries (network) session=%s",
+                            batch.seq,
+                            _MAX_NETWORK_RETRIES,
+                            self._session_id,
+                        )
+                        _cleanup(batch_wav)
+                        batch_wav = None
+                        await self._mark_batch_failed(
+                            batch,
+                            batch_chunk_id=batch_chunk_id,
+                            error_type="network_failed_max_retries",
+                        )
+                        return
+
+                except GroqRateLimitError as exc:
+                    logger.warning(
+                        "GroqRateLimitError batch seq=%d session=%s: %s",
+                        batch.seq,
+                        self._session_id,
+                        exc,
+                    )
+                    await self._push_groq_error_event(
+                        "rate_limit",
+                        {"batch_seq": batch.seq},
+                    )
+                    _cleanup(batch_wav)
+                    batch_wav = None
+                    await self._mark_batch_failed(
+                        batch,
+                        batch_chunk_id=batch_chunk_id,
+                        error_type="rate_limit",
+                    )
+                    return
+
+                except GroqServerError as exc:
+                    logger.error(
+                        "GroqServerError batch seq=%d session=%s: %s",
+                        batch.seq,
+                        self._session_id,
+                        exc,
+                    )
+                    await self._push_groq_error_event(
+                        "server_error",
+                        {"batch_seq": batch.seq, "detail": str(exc)},
+                    )
+                    _cleanup(batch_wav)
+                    batch_wav = None
+                    await self._mark_batch_failed(
+                        batch,
+                        batch_chunk_id=batch_chunk_id,
+                        error_type="server_error",
+                    )
+                    return
+
+                except (GroqApiKeyMissing, GroqClientError) as exc:
+                    error_type = (
+                        "api_key_missing"
+                        if isinstance(exc, GroqApiKeyMissing)
+                        else "client_error"
+                    )
+                    logger.error(
+                        "%s batch seq=%d session=%s: %s",
+                        type(exc).__name__,
+                        batch.seq,
+                        self._session_id,
+                        exc,
+                    )
+                    await self._push_groq_error_event(
+                        error_type,
+                        {"batch_seq": batch.seq, "detail": str(exc)},
+                    )
+                    _cleanup(batch_wav)
+                    batch_wav = None
+                    await self._mark_batch_failed(
+                        batch,
+                        batch_chunk_id=batch_chunk_id,
+                        error_type=error_type,
+                    )
+                    return
+
+            # 5. Success path.
+            assert result is not None
+            text = result["text"]
+            segments = result["segments"]
+
+            # Add global offset (batch.start_ms converted to seconds) to each segment.
+            offset_sec = batch.start_ms / 1000.0
+            adjusted_segments = [
+                {
+                    "start": seg["start"] + offset_sec,
+                    "end": seg["end"] + offset_sec,
+                    "text": seg["text"],
+                }
+                for seg in segments
+            ]
+
+            with closing(db.open_db()) as conn:
+                recording_chunks.update_chunk_status(conn, batch_chunk_id, "success", text)
+
+            # Clean up original VAD chunk rows (mark success, best-effort).
+            for cid in chunk_ids:
+                try:
+                    with closing(db.open_db()) as conn:
+                        recording_chunks.update_chunk_status(conn, cid, "success")
+                except Exception:  # noqa: BLE001
+                    pass
+
+            # Clean up batch temp WAV.
+            _cleanup(batch_wav)
+            batch_wav = None
+
+            await self._decrement_active()
+
+            # Build per-segment timing payload from adjusted_segments.
+            payload_segments = [
+                {
+                    "start_ms": int(round(seg["start"] * 1000)),
+                    "end_ms": int(round(seg["end"] * 1000)),
+                    "text": seg["text"],
+                }
+                for seg in adjusted_segments
+            ]
+
+            # Emit chunk_transcribed callback for the batch.
+            # segments is passed as a keyword arg so that the current 5-positional-arg
+            # registrant (_push_chunk_transcribed in server.py) does not break.
+            # TODO G1.3: update _push_chunk_transcribed to accept segments natively.
             cb = _on_chunk_transcribed
             if cb is not None:
                 try:
-                    await cb(self._session_id, job.seq, job.start_ms, job.end_ms, text)
+                    await cb(
+                        self._session_id,
+                        batch.seq,
+                        batch.start_ms,
+                        batch.end_ms,
+                        text,
+                        segments=payload_segments,
+                    )
+                except TypeError:
+                    # Fallback for registrants that don't yet accept the segments kwarg.
+                    await cb(
+                        self._session_id,
+                        batch.seq,
+                        batch.start_ms,
+                        batch.end_ms,
+                        text,
+                    )
                 except Exception:  # noqa: BLE001
                     logger.warning(
-                        "chunk_transcribed callback error for session=%s seq=%d",
+                        "chunk_transcribed callback error session=%s batch_seq=%d",
                         self._session_id,
-                        job.seq,
+                        batch.seq,
                     )
-            return
 
-        # 3b. Failure (TranscriptionError or empty text) — check retry_count.
-        conn = db.open_db()
-        try:
-            row = conn.execute(
-                "SELECT retry_count FROM recording_chunks WHERE id = ?",
-                (job.chunk_id,),
-            ).fetchone()
-            retry_count = row["retry_count"] if row else 0
+            logger.info(
+                "batch_transcribed session=%s seq=%d start_ms=%d end_ms=%d segments=%d",
+                self._session_id,
+                batch.seq,
+                batch.start_ms,
+                batch.end_ms,
+                len(adjusted_segments),
+            )
 
-            if retry_count < 1:
-                # Increment retry_count and set status to 'retry', then re-enqueue.
-                conn.execute(
-                    "UPDATE recording_chunks "
-                    "SET retry_count = retry_count + 1, status = 'retry', updated_at = datetime('now') "
-                    "WHERE id = ?",
-                    (job.chunk_id,),
-                )
-                conn.commit()
         finally:
-            conn.close()
+            # Safety net: clean up the temp WAV on any unexpected exception that
+            # bypassed the per-error _cleanup() calls above (M6).
+            # batch_wav is set to None by every normal error/success path so this
+            # is a no-op in those cases.
+            _cleanup(batch_wav)
 
-        if retry_count < 1:
-            # Re-enqueue WITHOUT incrementing _active_jobs (job already counted).
-            await self._queue.put(job)
-            return
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
 
-        # Final failure — retry_count >= 1, mark failed and keep temp file
-        # (Step 6c re-transcription uses ffmpeg extraction from the session webm;
-        # keeping the per-chunk file is harmless but not required — delete here
-        # for cleanliness).
-        self._mark_terminal_failed(job)
-        Path(job.audio_path).unlink(missing_ok=True)
-
-    def _mark_terminal_failed(self, job: ChunkJob) -> None:
-        """Persist 'failed' status, append to failed_ranges, and decrement counter."""
-        conn = db.open_db()
-        try:
-            recording_chunks.update_chunk_status(conn, job.chunk_id, "failed")
-        except Exception:
-            logger.exception("Could not mark chunk %d as failed", job.chunk_id)
-        finally:
-            conn.close()
-        self._failed_ranges.append(
-            {"seq": job.seq, "start_ms": job.start_ms, "end_ms": job.end_ms}
+    async def _concat_wavs(self, wav_paths: list[Path], batch: _BatchJob) -> Path:
+        """Concatenate WAV files in a thread; return path to the batch temp WAV."""
+        fd, tmp_path_str = tempfile.mkstemp(
+            prefix=f"locally_batch_{self._session_id}_{batch.seq}_",
+            suffix=".wav",
         )
-        self._decrement_active()
+        import os
 
-    def _decrement_active(self) -> None:
-        self._active_jobs -= 1
-        if self._active_jobs == 0:
-            self._idle_event.set()
+        os.close(fd)
+        output_path = Path(tmp_path_str)
+        await asyncio.to_thread(audio_concat.concat_wav_chunks, wav_paths, output_path)
+        return output_path
+
+    async def _push_groq_error_event(self, error_type: str, details: dict) -> None:
+        cb = _on_groq_error
+        if cb is None:
+            return
+        try:
+            await cb(self._session_id, error_type, details)
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "groq_error callback error session=%s error_type=%s",
+                self._session_id,
+                error_type,
+            )
+
+    async def _mark_batch_failed(
+        self,
+        batch: _BatchJob,
+        *,
+        batch_chunk_id: int | None = None,
+        error_type: str = "unknown",
+    ) -> None:
+        """Persist 'failed' status, record in failed_ranges, decrement counter."""
+        if batch_chunk_id is not None:
+            try:
+                with closing(db.open_db()) as conn:
+                    recording_chunks.update_chunk_status(conn, batch_chunk_id, "failed")
+            except Exception:
+                logger.exception(
+                    "Could not mark batch chunk %d as failed", batch_chunk_id
+                )
+
+            # Also mark original VAD chunk rows as failed (best-effort).
+            for chunk in batch.chunks:
+                try:
+                    with closing(db.open_db()) as conn:
+                        recording_chunks.update_chunk_status(conn, chunk.chunk_id, "failed")
+                except Exception:  # noqa: BLE001
+                    pass
+
+        self._failed_ranges.append(
+            {"start_ms": batch.start_ms, "end_ms": batch.end_ms}
+        )
+        await self._decrement_active()
+
+    async def _decrement_active(self) -> None:
+        async with self._state_lock:
+            self._active_jobs -= 1
+            if self._active_jobs == 0:
+                self._idle_event.set()
+
+
+def _cleanup(path: Path | None) -> None:
+    """Best-effort delete of a temp file."""
+    if path is not None:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -233,14 +576,43 @@ class SessionTranscribeQueue:
 # ---------------------------------------------------------------------------
 # server.py registers a coroutine callback here so transcribe_queue can push
 # chunk_transcribed events without creating a circular import.
-# Signature: async (session_id: str, seq: int, start_ms: int, end_ms: int, text: str) -> None
+# Current signature (5-arg legacy):
+#   async (session_id: str, seq: int, start_ms: int, end_ms: int, text: str) -> None
+# Extended signature (after G1.3):
+#   async (session_id: str, seq: int, start_ms: int, end_ms: int, text: str,
+#          *, segments: list[dict] | None = None) -> None
+# Each segment dict: {"start_ms": int, "end_ms": int, "text": str}
 _on_chunk_transcribed = None
 
 
 def register_chunk_transcribed_callback(cb) -> None:
-    """Register a coroutine callback invoked after each successful chunk transcription."""
+    """Register a coroutine callback invoked after each successful batch transcription.
+
+    The callback is invoked with positional args (session_id, seq, start_ms,
+    end_ms, text) and the keyword arg ``segments`` (list of dicts with keys
+    start_ms, end_ms, text).  Registrants that do not yet accept ``segments``
+    will receive a TypeError-triggered fallback call without that kwarg.
+    """
     global _on_chunk_transcribed
     _on_chunk_transcribed = cb
+
+
+# ---------------------------------------------------------------------------
+# Module-level Groq error callback
+# ---------------------------------------------------------------------------
+# server.py registers a coroutine callback here (in G1.3) so transcribe_queue
+# can push SSE groq_error events without a circular import.
+# Signature: async (session_id: str, error_type: str, details: dict) -> None
+#   error_type: "rate_limit" | "server_error" | "network_failed_max_retries"
+#               | "api_key_missing" | "client_error" | "concat_error"
+#               | "unexpected_error"
+_on_groq_error = None
+
+
+def register_groq_error_callback(cb) -> None:
+    """Register a coroutine callback invoked on non-retriable Groq errors."""
+    global _on_groq_error
+    _on_groq_error = cb
 
 
 # ---------------------------------------------------------------------------
@@ -264,15 +636,24 @@ def _get_lock() -> asyncio.Lock:
 async def create_session_queue(
     session_id: str,
     note_id: str,
-    model_dir: str | None,
-    glossary_prompt: str | None,
+    model_dir: str | None = None,
+    glossary_prompt: str | None = None,
+    prompt: str | None = None,
 ) -> SessionTranscribeQueue:
-    """Create and register a queue for session_id; raises if already exists."""
+    """Create and register a queue for session_id; raises if already exists.
+
+    ``model_dir`` is accepted but ignored (Groq migration — no local model).
+    ``glossary_prompt`` is the legacy name; ``prompt`` is preferred.
+    Both are forwarded to the Groq transcription call as the Whisper hint.
+    """
+    effective_prompt = prompt if prompt is not None else glossary_prompt
     lock = _get_lock()
     async with lock:
         if session_id in _QUEUES:
-            raise ValueError(f"Session queue already exists for session_id={session_id!r}")
-        q = SessionTranscribeQueue(session_id, note_id, model_dir, glossary_prompt)
+            raise ValueError(
+                f"Session queue already exists for session_id={session_id!r}"
+            )
+        q = SessionTranscribeQueue(session_id, note_id, effective_prompt)
         _QUEUES[session_id] = q
         return q
 

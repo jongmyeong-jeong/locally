@@ -150,22 +150,7 @@ function postSse(path, body, handlers = {}) {
 const getSystemInfo = () => request('/api/system/info')
 
 // Plan §4.2 Notes
-const listNotes = () => request('/api/notes')
 const getNote = (id) => request(`/api/notes/${encodeURIComponent(id)}`)
-const createNoteJson = (body) =>
-  request('/api/notes', {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify(body ?? {}),
-  })
-const createNoteMultipart = (formData) =>
-  request('/api/notes', { method: 'POST', body: formData })
-const updateNote = (id, patch) =>
-  request(`/api/notes/${encodeURIComponent(id)}`, {
-    method: 'PATCH',
-    headers: JSON_HEADERS,
-    body: JSON.stringify(patch),
-  })
 const deleteNote = (id, { deleteAudio = false } = {}) =>
   request(
     buildUrl(`/api/notes/${encodeURIComponent(id)}`, {
@@ -173,94 +158,16 @@ const deleteNote = (id, { deleteAudio = false } = {}) =>
     }),
     { method: 'DELETE' },
   )
-const getTranscript = (id) =>
-  request(`/api/notes/${encodeURIComponent(id)}/transcript`)
-const getSummary = (id) =>
-  request(`/api/notes/${encodeURIComponent(id)}/summary`)
-const getPrompt = (noteId, promptId = null) => {
-  const path = `/api/notes/${encodeURIComponent(noteId)}/prompt`
-  return request(buildUrl(path, { prompt_id: promptId }))
+
+// Download note transcript as .md file (Wave 1 endpoint)
+const downloadNote = (id) => {
+  const a = document.createElement('a')
+  a.href = `/api/notes/${encodeURIComponent(id)}/download`
+  a.download = ''
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
 }
-
-// Plan §4.2 Glossary
-const getGlossary = () => request('/api/glossary')
-const putGlossary = (terms) =>
-  request('/api/glossary', {
-    method: 'PUT',
-    headers: JSON_HEADERS,
-    body: JSON.stringify(terms),
-  })
-
-// Long-running SSE endpoints (plan §4.2).
-// Transcribe is POST; EventSource only supports GET. We POST to start, then
-// subscribe to the note-scoped event channel exposed by the server.
-const startTranscribe = (id) =>
-  request(`/api/notes/${encodeURIComponent(id)}/transcribe`, {
-    method: 'POST',
-  })
-const startSummarize = (id, { ai } = {}) =>
-  request(`/api/notes/${encodeURIComponent(id)}/summarize`, {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify(ai ? { ai } : {}),
-  })
-const cancelJob = (id) =>
-  request(`/api/notes/${encodeURIComponent(id)}/cancel`, {
-    method: 'POST',
-  })
-const subscribeNoteEvents = (id, handlers) =>
-  sse(`/api/notes/${encodeURIComponent(id)}/events`, handlers)
-
-// Model download is server-sent from POST — server_jobs surfaces the same
-// event stream via the note-events channel in Phase E. Keep the GET-SSE
-// subscription helper here for parity; caller triggers download via POST.
-const startModelDownload = (modelId) =>
-  request('/api/models/download', {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ modelId }),
-  })
-
-// /api/settings
-const getSettings = () => request('/api/settings')
-const patchSettings = (data) =>
-  request('/api/settings', {
-    method: 'PATCH',
-    headers: JSON_HEADERS,
-    body: JSON.stringify(data),
-  })
-
-// /api/jobs — plan extension
-const listJobs = () => request('/api/jobs')
-
-// Plan §4.2 Prompt presets (bu8)
-const listPrompts = () => request('/api/prompts')
-const getPromptPreset = (id) =>
-  request(`/api/prompts/${encodeURIComponent(id)}`)
-
-const createPrompt = (body) =>
-  request('/api/prompts', {
-    method: 'POST',
-    headers: JSON_HEADERS,
-    body: JSON.stringify(body),
-  })
-
-const updatePrompt = (id, body) =>
-  request(`/api/prompts/${encodeURIComponent(id)}`, {
-    method: 'PUT',
-    headers: JSON_HEADERS,
-    body: JSON.stringify(body),
-  })
-
-const deletePrompt = (id) =>
-  request(`/api/prompts/${encodeURIComponent(id)}`, { method: 'DELETE' })
-
-const reorderPrompts = (order) =>
-  request('/api/prompts/order', {
-    method: 'PUT',
-    headers: JSON_HEADERS,
-    body: JSON.stringify({ order }),
-  })
 
 // Plan §4.2 Recordings (AC-7 / Phase F).
 const createRecording = (body = {}) =>
@@ -299,33 +206,25 @@ const finalizeRecording = (id, body = {}, handlers = undefined) => {
 
 // Transcript SSE helper for real-time transcription display (Phase 3).
 // Opens a GET EventSource to the per-recording transcript-stream endpoint.
-// handlers: { onChunk(data), onEnd(data), onError?(e) }
+// handlers: { onChunk?(data), onEnd?(data), onGroqError?(data), onError?(e) }
 // Returns a dispose function: () => es.close()
 export function transcriptStream(recordingId, handlers = {}) {
   const es = new EventSource(
     `/api/recordings/${encodeURIComponent(recordingId)}/transcript-stream`,
   )
+
+  const parseEvent = (ev) => {
+    try { return JSON.parse(ev.data) } catch { return ev.data }
+  }
+
   es.addEventListener('chunk_transcribed', (ev) => {
-    if (typeof handlers.onChunk === 'function') {
-      let data
-      try {
-        data = JSON.parse(ev.data)
-      } catch {
-        data = ev.data
-      }
-      handlers.onChunk(data)
-    }
+    if (typeof handlers.onChunk === 'function') handlers.onChunk(parseEvent(ev))
   })
   es.addEventListener('stream_end', (ev) => {
-    if (typeof handlers.onEnd === 'function') {
-      let data
-      try {
-        data = JSON.parse(ev.data)
-      } catch {
-        data = ev.data
-      }
-      handlers.onEnd(data)
-    }
+    if (typeof handlers.onEnd === 'function') handlers.onEnd(parseEvent(ev))
+  })
+  es.addEventListener('groq_error', (ev) => {
+    if (typeof handlers.onGroqError === 'function') handlers.onGroqError(parseEvent(ev))
   })
   es.onerror = (e) => {
     if (typeof handlers.onError === 'function') handlers.onError(e)
@@ -338,31 +237,9 @@ export const api = {
   sse,
   postSse,
   getSystemInfo,
-  getSettings,
-  patchSettings,
-  listNotes,
   getNote,
-  createNoteJson,
-  createNoteMultipart,
-  updateNote,
   deleteNote,
-  getTranscript,
-  getSummary,
-  getPrompt,
-  getGlossary,
-  putGlossary,
-  startTranscribe,
-  startSummarize,
-  cancelJob,
-  subscribeNoteEvents,
-  startModelDownload,
-  listJobs,
-  listPrompts,
-  getPromptPreset,
-  createPrompt,
-  updatePrompt,
-  deletePrompt,
-  reorderPrompts,
+  downloadNote,
   createRecording,
   postRecordingChunk,
   finalizeRecording,

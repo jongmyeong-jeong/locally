@@ -1,6 +1,10 @@
 # OS-generated files
 .DS_Store
 
+# Project-scoped secrets — never commit
+.env
+.env.local
+
 # Local audio artifacts
 *.mp3
 *.wav

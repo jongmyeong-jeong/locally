@@ -1,13 +1,11 @@
 """Async job registry for the server.
 
-Tracks in-flight SSE jobs (transcribe / summarize / models download) so the
-HTTP layer can:
+Tracks in-flight SSE jobs (transcribe) so the HTTP layer can:
   - list them   (GET  /api/jobs)
   - cancel them (POST /api/notes/{id}/cancel) — A2: kill subprocess
   - proxy their events from a second client (GET /api/notes/{id}/events)
 
-Keyed by note_id for note-bound jobs (transcribe, summarize).
-Download jobs use the model id as their key.
+Keyed by note_id for note-bound jobs.
 """
 from __future__ import annotations
 
@@ -16,7 +14,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Literal
 
-JobType = Literal["transcribe", "summarize", "download"]
+JobType = Literal["transcribe"]
 JobStatus = Literal["running", "completed", "error", "cancelled"]
 
 

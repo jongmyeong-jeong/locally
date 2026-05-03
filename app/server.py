@@ -17,16 +17,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
+import tempfile
 import threading
 import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncIterator, Literal
+from typing import AsyncIterator
+
+import numpy as np
+import scipy.io.wavfile
 
 from fastapi import (
-    Body,
     FastAPI,
     File,
     Form,
@@ -40,20 +44,16 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import platform
+
 from app import logger
-from app import ai_detect
 from app import audio_io
 from app import db as db_mod
-from app import glossary as glossary_mod
-from app import models_catalog
 from app import paths
-from app import prompts as prompts_mod
+from app import prompt as prompt_mod
 from app import recording_chunks
 from app import recordings as recordings_mod
 from app import server_jobs
-from app import summarize as summarize_mod
-from app import transcribe as transcribe_mod
-from app import transcript_format as transcript_format_mod
 from app import transcribe_queue
 from app import vad_realtime
 
@@ -106,54 +106,92 @@ def _remove_transcript_queue(session_id: str) -> None:
     _TRANSCRIPT_SSE_QUEUES.pop(session_id, None)
 
 
+def _sidecar_segments_path(note_id: str, seq: int) -> Path:
+    """Return the path for the per-batch segments sidecar JSON file."""
+    return paths.audio_dir() / f"segments-{note_id}-{seq:03d}.json"
+
+
 async def _push_chunk_transcribed(
-    session_id: str, seq: int, start_ms: int, end_ms: int, text: str
+    session_id: str,
+    seq: int,
+    start_ms: int,
+    end_ms: int,
+    text: str,
+    *,
+    segments: list[dict] | None = None,
 ) -> None:
-    """Push a chunk_transcribed SSE event to the per-session queue, if registered."""
+    """Push a chunk_transcribed SSE event to the per-session queue, if registered.
+
+    Side-effect: if segments is not None, persist them as a sidecar JSON file
+    so the download endpoint can reconstruct fine-grained segment data later.
+    The note_id is obtained from the active recording session (session_id == note_id
+    for live recordings started via POST /api/recordings).
+    """
+    # Persist segments sidecar (note_id == session_id for live recordings).
+    if segments is not None:
+        try:
+            sidecar = _sidecar_segments_path(session_id, seq)
+            sidecar_payload = json.dumps(
+                {"seq": seq, "segments": segments}, ensure_ascii=False
+            )
+            tmp = sidecar.with_suffix(".tmp")
+            await asyncio.to_thread(tmp.write_text, sidecar_payload, "utf-8")
+            await asyncio.to_thread(os.replace, tmp, sidecar)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "segments_sidecar_write_error",
+                {"session_id": session_id, "seq": seq, "error": str(exc)},
+            )
+
     q = _TRANSCRIPT_SSE_QUEUES.get(session_id)
     if q is None:
         return
-    await q.put(_sse_event("chunk_transcribed", {
+    payload: dict = {
         "seq": seq,
         "startMs": start_ms,
         "endMs": end_ms,
         "text": text,
-    }))
+    }
+    if segments is not None:
+        payload["segments"] = segments
+    await q.put(_sse_event("chunk_transcribed", payload))
 
 
-# Register the callback with transcribe_queue so it can push events without
+# Register the callbacks with transcribe_queue so it can push events without
 # creating a circular import.
 transcribe_queue.register_chunk_transcribed_callback(_push_chunk_transcribed)
 
-
-def _any_model_ready() -> bool:
-    """Return True when at least one model is downloaded and ready."""
-    catalog = models_catalog.catalog_for_current_os()
-    return any(models_catalog.model_ready(e["id"]) for e in catalog)
+# SSE event name for Groq errors (rate_limit, server_error, etc.)
+_GROQ_ERROR_SSE_FIELD = "groq_error"
 
 
-def _active_recording_exists() -> bool:
-    """True if any live recording session is currently active."""
-    return recordings_mod.get_active_session_count() > 0
-
-
-def _ffmpeg_extract_range(
-    session_webm: str, start_ms: int, end_ms: int, out_path: str
+async def _push_groq_error(
+    session_id: str,
+    error_type: str,
+    details: dict,
 ) -> None:
-    """Extract [start_ms, end_ms) from session_webm into out_path via ffmpeg."""
-    ffmpeg = shutil.which("ffmpeg") or "ffmpeg"
-    cmd = [
-        ffmpeg,
-        "-y",
-        "-loglevel", "error",
-        "-ss", f"{start_ms / 1000:.3f}",
-        "-to", f"{end_ms / 1000:.3f}",
-        "-i", session_webm,
-        "-c", "copy",
-        out_path,
-    ]
-    import subprocess
-    subprocess.run(cmd, check=True)
+    """Push a groq_error SSE event to the per-session queue, if registered.
+
+    error_type is one of: "rate_limit", "server_error", "api_key_missing",
+    "client_error", "concat_error", "unexpected_error".
+    ("network_failed_max_retries" is NOT pushed per spec C2 — silent.)
+    """
+    q = _TRANSCRIPT_SSE_QUEUES.get(session_id)
+    if q is None:
+        return
+    await q.put(_sse_event(_GROQ_ERROR_SSE_FIELD, {
+        "errorType": error_type,
+        "details": details,
+    }))
+
+
+transcribe_queue.register_groq_error_callback(_push_groq_error)
+
+
+def _groq_api_key_set() -> bool:
+    """Return True when GROQ_API_KEY is present in the environment."""
+    import os
+    return bool(os.environ.get("GROQ_API_KEY"))
 
 
 def _cleanup_session_live_state(session_id: str) -> None:
@@ -238,16 +276,12 @@ def invalidate_system_info_cache() -> None:
 
 
 def _build_system_info() -> dict:
-    catalog = models_catalog.catalog_for_current_os()
-    ready = any(models_catalog.model_ready(entry["id"]) for entry in catalog)
-    ai_avail = ai_detect.availability()
+    import os
     return {
-        "os": models_catalog.current_os(),
-        "arch": models_catalog.current_arch(),
-        "modelCatalog": catalog,
-        "modelReady": ready,
-        "aiAvailable": ai_avail,
+        "os": platform.system().lower(),
+        "arch": platform.machine().lower(),
         "ffmpegAvailable": shutil.which("ffmpeg") is not None,
+        "groqConfigured": bool(os.environ.get("GROQ_API_KEY")),
     }
 
 
@@ -275,76 +309,16 @@ def _get_note_or_404(conn, note_id: str) -> dict:
     return note
 
 
-# ---------------------------------------------------------------------------
-# Model download helpers
-# ---------------------------------------------------------------------------
-
-
-def _dir_size(path: Path) -> int:
-    """Recursively sum file sizes under path. Returns 0 on any OSError."""
-    total = 0
-    try:
-        for entry in path.rglob("*"):
-            if entry.is_file():
-                try:
-                    total += entry.stat().st_size
-                except OSError:
-                    pass
-    except OSError:
-        pass
-    return total
-
-
-def _hf_cache_dir_for(model_id: str) -> Path:
-    """Return the HF hub cache blobs directory for model_id."""
-    try:
-        from huggingface_hub.constants import HF_HUB_CACHE  # type: ignore
-        cache_name = f"models--{model_id.replace('/', '--')}"
-        return Path(HF_HUB_CACHE) / cache_name / "blobs"
-    except Exception:
-        return Path("/nonexistent")
-
 
 # ---------------------------------------------------------------------------
 # Pydantic request bodies
 # ---------------------------------------------------------------------------
 
 
-class CreateNoteJSON(BaseModel):
-    title: str | None = None
-    audioPath: str | None = None
-
-
 class PatchNoteJSON(BaseModel):
     title: str | None = None
     status: str | None = None
 
-
-class DownloadModelJSON(BaseModel):
-    modelId: str
-
-
-class SummarizeJSON(BaseModel):
-    ai: Literal["auto", "claude", "codex", "none"] | None = None
-    prompt_id: int | None = None  # F5: 선택된 프리셋 id
-
-
-class PromptCreateJSON(BaseModel):
-    name: str
-    template: str
-
-
-class PromptUpdateJSON(BaseModel):
-    name: str | None = None
-    template: str | None = None
-
-
-class PromptReorderJSON(BaseModel):
-    order: list[int]
-
-
-class SettingsJSON(BaseModel):
-    preferredAi: Literal["auto", "claude", "codex", "none"] | None = None
 
 
 class RecordingStartJSON(BaseModel):
@@ -399,138 +373,6 @@ def create_app() -> FastAPI:
     @app.get("/api/system/info")
     def get_system_info() -> dict:
         return get_cached_system_info()
-
-    # ------------------------------------------------------------------
-    # Settings (preferred AI CLI)
-    # ------------------------------------------------------------------
-    def _read_settings() -> dict:
-        p = paths.settings_json_path()
-        if not p.exists():
-            return {"preferredAi": "auto"}
-        try:
-            return json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            return {"preferredAi": "auto"}
-
-    def _write_settings(data: dict) -> None:
-        p = paths.settings_json_path()
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-
-    @app.get("/api/settings")
-    def get_settings() -> dict:
-        return _read_settings()
-
-    @app.patch("/api/settings")
-    def patch_settings(body: SettingsJSON) -> dict:
-        current = _read_settings()
-        if body.preferredAi is not None:
-            current["preferredAi"] = body.preferredAi
-        _write_settings(current)
-        return current
-
-    # ------------------------------------------------------------------
-    # Models: download (SSE)
-    # ------------------------------------------------------------------
-    @app.post("/api/models/download")
-    async def download_model(body: DownloadModelJSON) -> StreamingResponse:
-        model_id = body.modelId
-
-        async def producer(queue: asyncio.Queue[bytes | None]) -> None:
-            loop = asyncio.get_running_loop()
-
-            total_bytes = models_catalog.size_mb_for(model_id) * 1024 * 1024
-            stop_event = threading.Event()
-            thread_started = False
-
-            dest_dir = models_catalog.model_dir_for(model_id)
-            incomplete = models_catalog.incomplete_dir_for(model_id)
-            cache_dir = _hf_cache_dir_for(model_id)
-
-            def _poll() -> None:
-                last_bytes = 0
-                last_time = time.monotonic()
-                while not stop_event.wait(1.0):
-                    current = max(_dir_size(dest_dir), _dir_size(cache_dir))
-                    now = time.monotonic()
-                    dt = now - last_time
-                    delta = max(0, current - last_bytes)
-                    speed_mbs = (delta / dt / 1_000_000) if dt > 0.5 else 0.0
-                    pct = min(current / total_bytes, 0.99) if total_bytes > 0 else 0.0
-                    eta = int((total_bytes - current) / (speed_mbs * 1_000_000)) if speed_mbs > 0.1 else None
-                    payload = {
-                        "percent": round(pct, 4),
-                        "downloaded_mb": int(current // (1024 * 1024)),
-                        "total_mb": int(total_bytes // (1024 * 1024)),
-                        "speed_mbps": round(speed_mbs, 2),
-                        "eta_seconds": eta,
-                    }
-                    asyncio.run_coroutine_threadsafe(
-                        queue.put(_sse_event("progress", payload)), loop
-                    )
-                    last_bytes = current
-                    last_time = now
-
-            poll_thread = threading.Thread(target=_poll, daemon=True)
-
-            try:
-                from huggingface_hub import snapshot_download  # type: ignore
-
-                incomplete.mkdir(parents=True, exist_ok=True)
-                poll_thread.start()
-                thread_started = True
-
-                def _blocking_download() -> str:
-                    return snapshot_download(
-                        repo_id=model_id,
-                        local_dir=str(dest_dir),
-                        local_dir_use_symlinks=False,
-                        resume_download=True,
-                    )
-
-                path = await asyncio.to_thread(_blocking_download)
-
-                # Stop polling and emit final 100%.
-                stop_event.set()
-                poll_thread.join(timeout=2.0)
-                await queue.put(_sse_event("progress", {
-                    "percent": 1.0,
-                    "downloaded_mb": int(total_bytes // (1024 * 1024)),
-                    "total_mb": int(total_bytes // (1024 * 1024)),
-                    "speed_mbps": 0.0,
-                    "eta_seconds": 0,
-                }))
-
-                # Cleanup sentinel.
-                try:
-                    if incomplete.exists():
-                        for p in incomplete.iterdir():
-                            try:
-                                p.unlink()
-                            except OSError:
-                                pass
-                        incomplete.rmdir()
-                except OSError:
-                    pass
-                invalidate_system_info_cache()
-
-                await queue.put(
-                    _sse_event("complete", {"modelId": model_id, "path": path})
-                )
-            except Exception as exc:  # noqa: BLE001 — surface to client
-                logger.error("models_download_error", {"error": str(exc)})
-                await queue.put(
-                    _sse_event(
-                        "error", {"message": str(exc), "canRetry": True}
-                    )
-                )
-            finally:
-                stop_event.set()
-                if thread_started:
-                    poll_thread.join(timeout=2.0)
-                await queue.put(None)
-
-        return _sse_stream(producer)
 
     # ------------------------------------------------------------------
     # Notes CRUD
@@ -616,284 +458,6 @@ def create_app() -> FastAPI:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # ------------------------------------------------------------------
-    # Transcribe (SSE)
-    # ------------------------------------------------------------------
-    @app.post("/api/notes/{note_id}/transcribe")
-    async def transcribe_note(note_id: str) -> StreamingResponse:
-        with db_mod.open_db() as conn:
-            note = _get_note_or_404(conn, note_id)
-        if not note.get("audioPath"):
-            raise HTTPException(status_code=400, detail="note has no audioPath")
-
-        audio_path = note["audioPath"]
-        title = note["title"]
-        await server_jobs.register(note_id, "transcribe")
-
-        async def producer(queue: asyncio.Queue[bytes | None]) -> None:
-            loop = asyncio.get_running_loop()
-            handle = await server_jobs.get(note_id)
-
-            def _progress_cb(payload: dict) -> None:
-                if handle is not None and handle.cancel_event.is_set():
-                    return
-                evt = _sse_event("progress", payload)
-                asyncio.run_coroutine_threadsafe(queue.put(evt), loop)
-
-            def _blocking_transcribe() -> tuple[str, list[dict]]:
-                catalog = models_catalog.catalog_for_current_os()
-                ready = [e for e in catalog if models_catalog.model_ready(e["id"])]
-                model_dir = (
-                    str(models_catalog.model_dir_for(ready[0]["id"])) if ready else None
-                )
-                glossary_terms = glossary_mod.load()
-                glossary_prompt: str | None = (
-                    ", ".join(glossary_terms) if glossary_terms else None
-                )
-                return transcribe_mod.run(
-                    audio_path,
-                    model_dir=model_dir,
-                    prompt=glossary_prompt,
-                    progress_cb=_progress_cb,
-                )
-
-            try:
-                with db_mod.open_db() as conn:
-                    db_mod.update_note(conn, note_id, status="transcribing")
-
-                text, segments = await asyncio.to_thread(_blocking_transcribe)
-
-                if handle is not None and handle.cancel_event.is_set():
-                    await queue.put(
-                        _sse_event(
-                            "error",
-                            {"message": "cancelled", "canRetry": False},
-                        )
-                    )
-                    return
-
-                if not segments:
-                    # AC6(B): 전사 결과 세그먼트가 0개면 transcription_failed로 기록.
-                    with db_mod.open_db() as conn:
-                        db_mod.update_note(
-                            conn, note_id, status="transcription_failed"
-                        )
-                    await queue.put(
-                        _sse_event(
-                            "error",
-                            {"message": "no segments", "canRetry": False},
-                        )
-                    )
-                    await server_jobs.set_status(note_id, "error")
-                    return
-
-                # Write transcript file.
-                basename = paths.audio_basename(title, datetime.now(), note_id=note_id)
-                out_path = paths.transcripts_dir() / f"{basename}.md"
-                out_path.parent.mkdir(parents=True, exist_ok=True)
-                content = transcript_format_mod.format_transcript_markdown(segments)
-                out_path.write_text(content, encoding="utf-8")
-
-                with db_mod.open_db() as conn:
-                    db_mod.update_note(
-                        conn,
-                        note_id,
-                        status="transcribed",
-                        transcript_path=str(out_path),
-                    )
-
-                await queue.put(
-                    _sse_event(
-                        "complete",
-                        {
-                            "status": "completed",
-                            "transcriptPath": str(out_path),
-                        },
-                    )
-                )
-                await server_jobs.set_status(note_id, "completed")
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "transcribe_error", {"note_id": note_id, "error": str(exc)}
-                )
-                await queue.put(
-                    _sse_event(
-                        "error", {"message": str(exc), "canRetry": True}
-                    )
-                )
-                await server_jobs.set_status(note_id, "error")
-                with db_mod.open_db() as conn:
-                    # AC6(C): 전사 중 예외도 transcription_failed로 통일.
-                    db_mod.update_note(conn, note_id, status="transcription_failed")
-            finally:
-                await queue.put(None)
-
-        return _sse_stream(producer)
-
-    # ------------------------------------------------------------------
-    # Summarize (SSE)
-    # ------------------------------------------------------------------
-    @app.post("/api/notes/{note_id}/summarize")
-    async def summarize_note(
-        note_id: str,
-        request: Request,
-        body: SummarizeJSON | None = Body(default=None),
-    ) -> StreamingResponse:
-        requested_ai = (body.ai if body is not None else None) or "auto"
-
-        with db_mod.open_db() as conn:
-            note = _get_note_or_404(conn, note_id)
-        if note.get("status") == "summarizing":
-            raise HTTPException(status_code=409, detail="이미 요약 중인 노트입니다")
-        if not note.get("transcriptPath"):
-            raise HTTPException(
-                status_code=400, detail="note has no transcriptPath"
-            )
-
-        # F5: prompt_id로 프리셋 선택. 없거나 유효하지 않으면 첫 항목 fallback.
-        prompts_mod.ensure_seed()  # G2 방어 — 요약 진입 시점 시드 보장
-        presets = prompts_mod.load()
-        selected_template: str | None = None
-        prompt_id = body.prompt_id if body is not None else None
-        if prompt_id is not None:
-            selected = next((p for p in presets if p["id"] == prompt_id), None)
-            if selected is not None:
-                selected_template = selected["template"]
-        if selected_template is None and presets:
-            selected_template = presets[0]["template"]
-
-        transcript_text = Path(note["transcriptPath"]).read_text(encoding="utf-8")
-        title = note["title"]
-        glossary_terms = glossary_mod.load()
-        prompt = summarize_mod.build_prompt(
-            transcript=transcript_text,
-            glossary_terms=glossary_terms,
-            title=title,
-            template=selected_template,
-        )
-
-        # Resolve AI CLI.
-        ai_info: dict | None
-        if requested_ai == "none":
-            ai_info = None
-        elif requested_ai in ("claude", "codex"):
-            path = shutil.which(requested_ai)
-            ai_info = {"name": requested_ai, "path": path} if path else None
-        else:
-            ai_info = ai_detect.detect_ai_cli()
-
-        handle = await server_jobs.register(note_id, "summarize")
-
-        async def producer(queue: asyncio.Queue[bytes | None]) -> None:
-            # Watch for client disconnect and propagate to cancel_event.
-            async def _disconnect_watcher() -> None:
-                while not handle.cancel_event.is_set():
-                    if await request.is_disconnected():
-                        handle.cancel_event.set()
-                        return
-                    await asyncio.sleep(1.0)
-
-            disconnect_task = asyncio.create_task(_disconnect_watcher())
-            try:
-                await _producer_body(queue)
-            finally:
-                disconnect_task.cancel()
-
-        async def _producer_body(queue: asyncio.Queue[bytes | None]) -> None:
-            # No AI path → immediately emit prompt_ready + write prompt.md.
-            if ai_info is None:
-                copy_text = prompt + "\n\n---\n전사:\n" + transcript_text
-                await queue.put(
-                    _sse_event(
-                        "prompt_ready",
-                        {
-                            "prompt": prompt,
-                            "transcript": transcript_text,
-                            "copyText": copy_text,
-                        },
-                    )
-                )
-                try:
-                    basename = paths.audio_basename(title, datetime.now(), note_id=note_id)
-                    summarize_mod.write_outputs(
-                        note_id=note_id,
-                        slug=basename,
-                        summary_md=None,
-                        prompt_md=prompt,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.error(
-                        "summarize_prompt_write_error",
-                        {"note_id": note_id, "error": str(exc)},
-                    )
-                await server_jobs.set_status(note_id, "completed")
-                await queue.put(None)
-                return
-
-            async def _on_heartbeat(elapsed_s: int) -> None:
-                await queue.put(_sse_event("ai_waiting", {"elapsed_s": elapsed_s}))
-
-            def _on_process_started(proc: asyncio.subprocess.Process) -> None:
-                asyncio.create_task(server_jobs.attach_subprocess(note_id, proc))
-
-            try:
-                with db_mod.open_db() as conn:
-                    db_mod.update_note(conn, note_id, status="summarizing")
-
-                stdout, _proc = await summarize_mod.run_ai(
-                    ai_name=ai_info["name"],  # type: ignore[arg-type]
-                    ai_path=ai_info["path"],
-                    prompt=prompt,
-                    on_heartbeat=_on_heartbeat,
-                    cancel_event=handle.cancel_event,
-                    on_process_started=_on_process_started,
-                )
-
-                basename = paths.audio_basename(title, datetime.now(), note_id=note_id)
-                out = summarize_mod.write_outputs(
-                    note_id=note_id,
-                    slug=basename,
-                    summary_md=stdout,
-                    prompt_md=prompt,
-                )
-                summary_path = out["summary_path"]
-
-                with db_mod.open_db() as conn:
-                    db_mod.update_note(
-                        conn,
-                        note_id,
-                        status="completed",
-                        summary_path=summary_path,
-                    )
-
-                await queue.put(
-                    _sse_event("complete", {"summaryPath": summary_path})
-                )
-                await server_jobs.set_status(note_id, "completed")
-            except asyncio.CancelledError:
-                await queue.put(
-                    _sse_event(
-                        "error", {"message": "cancelled", "canRetry": False}
-                    )
-                )
-                await server_jobs.set_status(note_id, "cancelled")
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "summarize_error", {"note_id": note_id, "error": str(exc)}
-                )
-                await queue.put(
-                    _sse_event(
-                        "error", {"message": str(exc), "canRetry": True}
-                    )
-                )
-                await server_jobs.set_status(note_id, "error")
-                with db_mod.open_db() as conn:
-                    db_mod.update_note(conn, note_id, status="error")
-            finally:
-                await queue.put(None)
-
-        return _sse_stream(producer)
-
-    # ------------------------------------------------------------------
     # Cancel
     # ------------------------------------------------------------------
     @app.post(
@@ -905,7 +469,7 @@ def create_app() -> FastAPI:
         return Response(status_code=status.HTTP_204_NO_CONTENT)
 
     # ------------------------------------------------------------------
-    # Transcript / summary fetch
+    # Transcript fetch
     # ------------------------------------------------------------------
     @app.get("/api/notes/{note_id}/transcript")
     def get_transcript(note_id: str) -> dict:
@@ -916,42 +480,109 @@ def create_app() -> FastAPI:
         content = Path(note["transcriptPath"]).read_text(encoding="utf-8")
         return {"content": content, "segments": []}
 
-    @app.get("/api/notes/{note_id}/summary")
-    def get_summary(note_id: str) -> dict:
+    # ------------------------------------------------------------------
+    # Transcript download (.md)
+    # ------------------------------------------------------------------
+    @app.get("/api/notes/{note_id}/download")
+    async def download_transcript(note_id: str) -> FileResponse:
+        """Generate and return a .md transcript file for download.
+
+        Segment data is read from per-batch sidecar JSON files written during
+        transcription (option B — no schema change). Failed ranges are derived
+        from recording_chunks rows with status='failed'.
+        """
+        import glob as glob_mod
+        import re as re_mod
+        import unicodedata
+        from datetime import timezone
+
+        from app import markdown_writer
+
+        # 1. Load note.
         with db_mod.open_db() as conn:
-            note = _get_note_or_404(conn, note_id)
-        if not note.get("summaryPath"):
-            raise HTTPException(status_code=404, detail="summary not found")
-        content = Path(note["summaryPath"]).read_text(encoding="utf-8")
-        return {"content": content}
+            note = db_mod.get_note(conn, note_id)
+        if note is None:
+            raise HTTPException(status_code=404, detail="note not found")
 
-    @app.get("/api/notes/{note_id}/prompt")
-    def get_note_prompt(note_id: str, prompt_id: int | None = None) -> dict:
-        prompts_mod.ensure_seed()  # 방어
+        # 2. Load chunks; 404 if none.
         with db_mod.open_db() as conn:
-            note = _get_note_or_404(conn, note_id)
-        if not note.get("transcriptPath"):
-            raise HTTPException(status_code=404, detail="transcript not found")
+            chunks = recording_chunks.get_chunks(conn, note_id)
+        if not chunks:
+            raise HTTPException(status_code=404, detail="no recording chunks found")
 
-        presets = prompts_mod.load()
-        selected_template: str | None = None
-        if prompt_id is not None:
-            selected = next((p for p in presets if p["id"] == prompt_id), None)
-            if selected is not None:
-                selected_template = selected["template"]
-        if selected_template is None and presets:
-            selected_template = presets[0]["template"]
-
-        transcript_text = Path(note["transcriptPath"]).read_text(encoding="utf-8")
-        title = note["title"]
-        glossary_terms = glossary_mod.load()
-        prompt = summarize_mod.build_prompt(
-            transcript=transcript_text,
-            glossary_terms=glossary_terms,
-            title=title,
-            template=selected_template,
+        # 3. Collect segments from sidecar files, sorted by seq.
+        sidecar_pattern = str(paths.audio_dir() / f"segments-{note_id}-*.json")
+        sidecar_files = sorted(
+            glob_mod.glob(sidecar_pattern),
+            key=lambda p: int(re_mod.search(r"-(\d+)\.json$", p).group(1))  # type: ignore[union-attr]
+            if re_mod.search(r"-(\d+)\.json$", p)
+            else 0,
         )
-        return {"prompt": prompt}
+        all_segments: list[dict] = []
+        for sf in sidecar_files:
+            try:
+                data = json.loads(Path(sf).read_text(encoding="utf-8"))
+                all_segments.extend(data.get("segments", []))
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning(
+                    "segments_sidecar_read_error",
+                    {"note_id": note_id, "file": sf, "error": str(exc)},
+                )
+
+        # 4. Build failed_ranges from chunks with status='failed'.
+        failed_ranges = [
+            {"start_ms": c["start_ms"], "end_ms": c["end_ms"]}
+            for c in chunks
+            if c.get("status") == "failed"
+        ]
+
+        # 5. Parse recorded_at from note's createdAt ISO string.
+        try:
+            recorded_at = datetime.fromisoformat(note["createdAt"])
+        except (KeyError, ValueError):
+            recorded_at = datetime.now(timezone.utc)
+
+        note_title: str = note.get("title") or "untitled"
+
+        # 6. Write .md to a temp file.
+        with tempfile.NamedTemporaryFile(
+            suffix=".md", delete=False, mode="w", encoding="utf-8"
+        ) as tmp:
+            tmp_path = Path(tmp.name)
+
+        markdown_writer.write_transcript_md(
+            title=note_title,
+            recorded_at=recorded_at,
+            segments=all_segments,
+            failed_ranges=failed_ranges,
+            output_path=tmp_path,
+        )
+
+        # 7. Build a safe filename (ASCII + RFC 5987 UTF-8 fallback).
+        date_str = recorded_at.strftime("%Y-%m-%d")
+        # ASCII-safe: strip non-ASCII for the plain filename= token.
+        ascii_title = (
+            unicodedata.normalize("NFKD", note_title)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+            .strip()
+            or "transcript"
+        )
+        ascii_filename = f"{date_str}-{ascii_title}.md"
+        # Percent-encode the UTF-8 version for filename*= (RFC 5987).
+        from urllib.parse import quote as _url_quote
+        utf8_filename = f"{date_str}-{note_title}.md"
+        encoded_filename = _url_quote(utf8_filename, safe="")
+        content_disposition = (
+            f"attachment; filename=\"{ascii_filename}\"; "
+            f"filename*=UTF-8''{encoded_filename}"
+        )
+
+        return FileResponse(
+            path=str(tmp_path),
+            media_type="text/markdown",
+            headers={"Content-Disposition": content_disposition},
+        )
 
     # ------------------------------------------------------------------
     # Events proxy (plan extension): re-emits the most recent cancel signal.
@@ -980,111 +611,15 @@ def create_app() -> FastAPI:
         return _sse_stream(producer)
 
     # ------------------------------------------------------------------
-    # Glossary
-    # ------------------------------------------------------------------
-    @app.get("/api/glossary")
-    def get_glossary() -> list[str]:
-        return glossary_mod.load()
-
-    @app.put("/api/glossary")
-    async def put_glossary(request: Request) -> Response:
-        raw = await request.body()
-        try:
-            terms = json.loads(raw.decode("utf-8")) if raw else []
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            raise HTTPException(status_code=400, detail="invalid JSON body")
-        if not isinstance(terms, list):
-            raise HTTPException(status_code=400, detail="expected array of strings")
-        terms = [str(t) for t in terms]
-        glossary_mod.save(terms)
-        return Response(
-            status_code=200,
-            content=b"",
-            headers={"Content-Length": "0"},
-        )
-
-    # ------------------------------------------------------------------
-    # Prompt presets (F1~F4, F6)
-    # ------------------------------------------------------------------
-    # NOTE: 라우트 등록 순서 중요 — `/api/prompts/order`를 `/api/prompts/{prompt_id}`
-    # 보다 먼저 등록해야 'order'가 int 파싱에 실패하지 않는다.
-
-    @app.get("/api/prompts")
-    def list_prompts() -> list[dict]:
-        # A1/A3/G2 보장 — 진입 시 시드.
-        prompts_mod.ensure_seed()
-        return prompts_mod.load()
-
-    @app.get("/api/prompts/{prompt_id}")
-    def get_prompt(prompt_id: int) -> dict:
-        prompts_mod.ensure_seed()
-        presets = prompts_mod.load()
-        preset = next((p for p in presets if p["id"] == prompt_id), None)
-        if preset is None:
-            raise HTTPException(status_code=404, detail="prompt not found")
-        return preset
-
-    @app.post("/api/prompts", status_code=201)
-    def create_prompt(body: PromptCreateJSON) -> dict:
-        presets = prompts_mod.load()
-        new_id = prompts_mod.next_id(presets)
-        new_preset = {
-            "id": new_id,
-            "name": body.name,
-            "template": body.template,
-        }
-        presets.append(new_preset)  # 배열 끝에 append (F2)
-        prompts_mod.save(presets)
-        return new_preset
-
-    @app.put("/api/prompts/order")
-    def reorder_prompts(body: PromptReorderJSON) -> dict:
-        presets = prompts_mod.load()
-        id_to_preset = {p["id"]: p for p in presets}
-        requested_ids = set(body.order)
-        # F6: order 배열에서 파일에 없는 id는 무시 (실용적).
-        reordered = [
-            id_to_preset[i] for i in body.order if i in id_to_preset
-        ]
-        reordered.extend(p for p in presets if p["id"] not in requested_ids)
-        prompts_mod.save(reordered)
-        return {"ok": True}
-
-    @app.put("/api/prompts/{prompt_id}")
-    def update_prompt(prompt_id: int, body: PromptUpdateJSON) -> dict:
-        presets = prompts_mod.load()
-        target = next((p for p in presets if p["id"] == prompt_id), None)
-        if target is None:
-            raise HTTPException(status_code=404, detail="prompt not found")
-        if body.name is not None:
-            target["name"] = body.name
-        if body.template is not None:
-            target["template"] = body.template
-        prompts_mod.save(presets)
-        return target
-
-    @app.delete(
-        "/api/prompts/{prompt_id}",
-        status_code=status.HTTP_204_NO_CONTENT,
-    )
-    def delete_prompt(prompt_id: int) -> Response:
-        presets = prompts_mod.load()
-        new_presets = [p for p in presets if p["id"] != prompt_id]
-        if len(new_presets) == len(presets):
-            raise HTTPException(status_code=404, detail="prompt not found")
-        prompts_mod.save(new_presets)
-        return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-    # ------------------------------------------------------------------
     # Recordings
     # ------------------------------------------------------------------
     @app.post("/api/recordings", status_code=status.HTTP_201_CREATED)
     async def create_recording(body: RecordingStartJSON | None = None) -> JSONResponse:
-        # 1. Model presence check — return 503 when no model is installed.
-        if not _any_model_ready():
+        # 1. Groq API key check — return 503 when GROQ_API_KEY is missing.
+        if not _groq_api_key_set():
             return JSONResponse(
                 status_code=503,
-                content={"error": "model_not_installed"},
+                content={"error": "groq_api_key_missing"},
             )
 
         # 2. Concurrent-recording guard + session creation are atomic.
@@ -1098,21 +633,14 @@ def create_app() -> FastAPI:
             )
         session_id = session["id"]
 
-        # 4. Determine ready model_dir.
-        catalog = models_catalog.catalog_for_current_os()
-        ready = [e for e in catalog if models_catalog.model_ready(e["id"])]
-        model_dir = str(models_catalog.model_dir_for(ready[0]["id"])) if ready else None
-
-        # 5. Load glossary for chunk transcription (live recording path only).
-        glossary_terms = glossary_mod.load()
-        glossary_prompt: str | None = ", ".join(glossary_terms) if glossary_terms else None
+        # 5. Load prompt for chunk transcription (live recording path only).
+        recording_prompt: str | None = prompt_mod.load()
 
         # 6. Create per-session transcription queue and start the worker.
         queue = await transcribe_queue.create_session_queue(
             session_id,
             session_id,  # note_id not yet known; will be set after seq=0 chunk
-            model_dir,
-            glossary_prompt=glossary_prompt,
+            prompt=recording_prompt,
         )
         await queue.start()
 
@@ -1143,10 +671,8 @@ def create_app() -> FastAPI:
         # (i.e. session was created via POST /api/recordings, not directly in tests).
         detector = _VAD_DETECTORS.get(session_id)
         chunk_temp_path: Path | None = None
-        keep_chunk_temp = False
 
         if detector is not None:
-            import tempfile
             chunk_temp_path = (
                 Path(tempfile.gettempdir()) / f"{session_id}_chunk_{seq}.webm"
             )
@@ -1198,11 +724,6 @@ def create_app() -> FastAPI:
                         boundaries = detector.feed(pcm)
 
                     if boundaries and note_id:
-                        import tempfile
-
-                        import numpy as np
-                        import scipy.io.wavfile
-
                         sq = await transcribe_queue.get_session_queue(session_id)
                         with db_mod.open_db() as conn:
                             for start_ms, end_ms, pcm_slice in boundaries:
@@ -1243,7 +764,7 @@ def create_app() -> FastAPI:
 
             return result
         finally:
-            if chunk_temp_path is not None and not keep_chunk_temp:
+            if chunk_temp_path is not None:
                 chunk_temp_path.unlink(missing_ok=True)
 
     @app.post("/api/recordings/{session_id}/finalize")
@@ -1262,8 +783,8 @@ def create_app() -> FastAPI:
 
         async def producer(queue: asyncio.Queue[bytes | None]) -> None:
             # Intentionally does NOT set cancel_event — finalize work must
-            # complete regardless of client connection state. Contrast with
-            # _disconnect_watcher in summarize path (line 751) which cancels.
+            # complete regardless of client connection state (only logs
+            # disconnect for observability).
             note_id_ref: list[str | None] = [None]
 
             async def _disconnect_logger() -> None:
@@ -1335,77 +856,23 @@ def create_app() -> FastAPI:
                 note_id_ref[0] = note_id
                 session_audio_path: str = result["audioPath"]
 
-                # Determine model_dir (same logic as create_recording).
-                catalog = models_catalog.catalog_for_current_os()
-                ready_models = [
-                    e for e in catalog if models_catalog.model_ready(e["id"])
-                ]
-                model_dir = (
-                    str(models_catalog.model_dir_for(ready_models[0]["id"]))
-                    if ready_models
-                    else None
-                )
-                # Read glossary_prompt from the session queue (set at create_recording time).
-                _sq_for_glossary = await transcribe_queue.get_session_queue(session_id)
-                glossary_prompt: str | None = (
-                    _sq_for_glossary.glossary_prompt if _sq_for_glossary is not None else None
-                )
-
-                # 2. Flush VAD detector to emit any trailing audio boundary.
+                # 2. Flush VAD detector to drain any remaining internal buffer.
+                # flush() returns the time range of buffered audio but does not
+                # produce a WAV file — the VAD pipeline captures complete speech
+                # segments during feed(). Any sub-threshold tail is discarded here.
                 detector = _VAD_DETECTORS.get(session_id)
                 if detector is not None:
                     lock = _VAD_LOCKS.get(session_id)
-                    tail: tuple[int, int] | None
                     if lock is not None:
                         async with lock:
-                            tail = detector.flush()
+                            discarded = detector.flush()
                     else:
-                        tail = detector.flush()
-
-                    if tail is not None:
-                        start_ms, end_ms = tail
-                        import tempfile
-                        tail_path = (
-                            Path(tempfile.gettempdir())
-                            / f"{session_id}_tail.webm"
+                        discarded = detector.flush()
+                    if discarded:
+                        logger.info(
+                            "vad_flush_discarded",
+                            {"discarded_ms_range": discarded},
                         )
-                        try:
-                            await asyncio.to_thread(
-                                _ffmpeg_extract_range,
-                                session_audio_path,
-                                start_ms,
-                                end_ms,
-                                str(tail_path),
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            logger.warning(
-                                "finalize_tail_extract_error",
-                                {"session_id": session_id, "error": str(exc)},
-                            )
-                            tail_path = None
-
-                        if tail_path is not None:
-                            sq = await transcribe_queue.get_session_queue(session_id)
-                            with db_mod.open_db() as conn:
-                                chunk_seq = _CHUNK_SEQ.get(session_id, 0)
-                                chunk_id = recording_chunks.insert_chunk(
-                                    conn,
-                                    note_id,
-                                    chunk_seq,
-                                    start_ms,
-                                    end_ms,
-                                )
-                                _CHUNK_SEQ[session_id] = chunk_seq + 1
-                            job = transcribe_queue.ChunkJob(
-                                chunk_id=chunk_id,
-                                note_id=note_id,
-                                seq=chunk_seq,
-                                start_ms=start_ms,
-                                end_ms=end_ms,
-                                audio_path=str(tail_path),
-                            )
-                            if sq is not None:
-                                await sq.push(job)
 
                 # 3. Drain the queue — wait for all pre-transcription jobs.
                 await queue.put(
@@ -1418,53 +885,8 @@ def create_app() -> FastAPI:
                     _sse_event("progress", {"status": "drained"})
                 )
 
-                # 4. Option H — re-transcribe failed ranges from session webm.
-                if sq is not None and sq.failed_ranges:
-                    import tempfile
-                    for fr in sorted(sq.failed_ranges, key=lambda x: x["seq"]):
-                        fr_path = (
-                            Path(tempfile.gettempdir())
-                            / f"{session_id}_retry_{fr['seq']}.webm"
-                        )
-                        try:
-                            await asyncio.to_thread(
-                                _ffmpeg_extract_range,
-                                session_audio_path,
-                                fr["start_ms"],
-                                fr["end_ms"],
-                                str(fr_path),
-                            )
-                            text, _ = await asyncio.to_thread(
-                                transcribe_mod.run,
-                                str(fr_path),
-                                model_dir=model_dir,
-                                prompt=glossary_prompt,
-                                profile="chunk",
-                            )
-                        except Exception as exc:  # noqa: BLE001
-                            logger.warning(
-                                "finalize_retry_error",
-                                {
-                                    "session_id": session_id,
-                                    "seq": fr["seq"],
-                                    "error": str(exc),
-                                },
-                            )
-                            text = ""
-                        finally:
-                            fr_path.unlink(missing_ok=True)
-
-                        if text:
-                            with db_mod.open_db() as conn:
-                                row = conn.execute(
-                                    "SELECT id FROM recording_chunks "
-                                    "WHERE note_id = ? AND start_ms = ? AND end_ms = ?",
-                                    (note_id, fr["start_ms"], fr["end_ms"]),
-                                ).fetchone()
-                                if row:
-                                    recording_chunks.update_chunk_status(
-                                        conn, row["id"], "success", text
-                                    )
+                # 4. (Option H retry removed — retries handled by groq_client
+                #     at batch level; failed_ranges recorded in .md by markdown_writer.)
 
                 # 5. Assemble transcript from all chunks.
                 with db_mod.open_db() as conn:

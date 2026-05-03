@@ -6,7 +6,6 @@ Public CLI surface:
 AC-2 stdout (plan §4.7 — paste verbatim, '▸' is U+25B8):
   ▸ OS 감지: {os_label}
   ▸ 데이터 경로: ~/.locally/workspace, ~/.locally
-  ▸ 모델 상태: {모델_상태}
   ▸ 서버 시작: http://localhost:{port}
   ▸ 브라우저 오픈 중...
 """
@@ -19,6 +18,7 @@ import threading
 import time
 import urllib.request
 import webbrowser
+from pathlib import Path
 
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -26,9 +26,27 @@ if sys.platform == "win32":
 
 import typer
 
-from app import models_catalog, paths
+from app import paths
 
 app = typer.Typer(help="Locally — 로컬 회의록 생성기", no_args_is_help=True)
+
+_ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+
+def _bootstrap() -> None:
+    """Load project-scoped .env before any env reads occur.
+
+    override=False means real shell env vars take precedence over .env values,
+    so existing ``export GROQ_API_KEY=...`` users are not disrupted.
+    """
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(dotenv_path=_ENV_PATH, override=False)
+    except Exception as exc:  # noqa: BLE001
+        import warnings
+
+        warnings.warn(f"Failed to load .env ({_ENV_PATH}): {exc}", stacklevel=1)
 
 _ARROW = "\u25b8"  # ▸  (U+25B8)
 _DEFAULT_PORT = 54787
@@ -38,6 +56,7 @@ _PORT_RANGE_END = 54796  # inclusive
 @app.callback()
 def main() -> None:
     """Top-level CLI group."""
+    _bootstrap()
 
 
 def _os_label() -> str:
@@ -50,13 +69,6 @@ def _os_label() -> str:
     if system == "Windows":
         return f"Windows ({machine or 'x86_64'})"
     return f"{system} ({machine or 'unknown'})"
-
-
-def _model_status_label() -> str:
-    catalog = models_catalog.catalog_for_current_os()
-    if any(models_catalog.model_ready(entry["id"]) for entry in catalog):
-        return "준비됨"
-    return "설치되지 않음"
 
 
 def _port_is_free(host: str, port: int) -> bool:
@@ -130,7 +142,6 @@ def start(
 def _print_start(*, host: str, port: int, no_browser: bool) -> None:
     typer.echo(f"{_ARROW} OS 감지: {_os_label()}")
     typer.echo(f"{_ARROW} 데이터 경로: ~/.locally/workspace, ~/.locally")
-    typer.echo(f"{_ARROW} 모델 상태: {_model_status_label()}")
 
     chosen_port, cascade = _resolve_port(host, port)
     all_busy = any("모두 점유" in line for line in cascade)

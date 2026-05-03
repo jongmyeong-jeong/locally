@@ -1,0 +1,107 @@
+/* FlipCardTimer — 3D flip animation per Figma spec (nodes 465:7092, 465:7219, 468:7315) */
+
+.flip-timer {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  font-family: 'Inter', sans-serif;
+  font-weight: 400;
+  font-size: 140px;
+  line-height: 140px;
+  color: #171717;
+  letter-spacing: -7px;
+}
+
+/* HH segment (prepended at 60min) — fades in smoothly */
+.flip-timer__hh-segment {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  opacity: 0;
+  transition: opacity 600ms ease-in-out;
+}
+
+.flip-timer__hh-segment--visible {
+  opacity: 1;
+}
+
+/* Colon separator between digit groups */
+.flip-timer__sep {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 140px;
+  line-height: 140px;
+  color: #171717;
+  letter-spacing: 0;
+  /* 4px gap between groups via margin */
+  margin: 0 4px;
+  /* Separators don't participate in flip — just static text */
+  user-select: none;
+}
+
+/* ── FlipCard digit ──────────────────────────────────────────── */
+
+.flip-card {
+  position: relative;
+  display: inline-block;
+  /* Width auto-fits to the digit glyph; overflow hidden per half */
+  overflow: visible;
+}
+
+.flip-card__inner {
+  position: relative;
+  display: inline-block;
+  /* 3D context */
+  transform-style: preserve-3d;
+  perspective: 600px;
+}
+
+/* Each half is absolutely positioned to stack on top of each other */
+.flip-card__top,
+.flip-card__bottom {
+  display: block;
+  overflow: hidden;
+  /* Width/height come from content — let the digit size determine them */
+}
+
+/* Top half: shows the upper 50% of the current digit */
+.flip-card__top {
+  position: relative;
+  /* Clip to upper half */
+  clip-path: inset(0 0 50% 0);
+  /* Layer above bottom */
+  z-index: 2;
+  transform-origin: bottom center;
+  backface-visibility: hidden;
+  transition: transform 400ms ease-in-out;
+}
+
+.flip-card__top--flipping {
+  transform: rotateX(-180deg);
+}
+
+/* Bottom half: shows the lower 50% of the INCOMING digit */
+.flip-card__bottom {
+  position: absolute;
+  top: 0;
+  left: 0;
+  /* Clip to lower half */
+  clip-path: inset(50% 0 0 0);
+  z-index: 1;
+  backface-visibility: hidden;
+}
+
+/* The text node inside each half — position it so the glyph aligns correctly */
+.flip-card__digit {
+  display: inline-block;
+  font-family: 'Inter', sans-serif;
+  font-weight: 400;
+  font-size: 140px;
+  line-height: 140px;
+  color: #171717;
+  letter-spacing: -7px;
+  /* No background, no border — pure glyph per Figma */
+  background: transparent;
+  white-space: nowrap;
+}

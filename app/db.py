@@ -2,10 +2,10 @@
 
 Schema (idempotent):
   notes(id TEXT PRIMARY KEY, title TEXT, created_at TEXT, status TEXT,
-        audio_path TEXT, transcript_path TEXT, summary_path TEXT)
+        audio_path TEXT, transcript_path TEXT)
 
 Status values (informational; not a CHECK constraint):
-  'recording' | 'pending' | 'transcribing' | 'transcribed' | 'summarizing'
+  'recording' | 'pending' | 'transcribing' | 'transcribed'
   | 'completed' | 'error' | 'transcription_failed'
 
 create_note(title=None) → title stored as literal 'untitled' (B3).
@@ -26,8 +26,7 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     audio_path TEXT,
-    transcript_path TEXT,
-    summary_path TEXT
+    transcript_path TEXT
 )
 """
 
@@ -60,14 +59,12 @@ _ALLOWED_UPDATE_COLUMNS = {
     "status",
     "audio_path",
     "transcript_path",
-    "summary_path",
 }
 
 # Map camelCase aliases accepted by update_note to DB columns.
 _UPDATE_ALIASES = {
     "audioPath": "audio_path",
     "transcriptPath": "transcript_path",
-    "summaryPath": "summary_path",
 }
 
 
@@ -85,7 +82,7 @@ def open_db(path: Path | None = None) -> sqlite3.Connection:
 
 
 def migrate(conn: sqlite3.Connection) -> None:
-    """Idempotent schema creation."""
+    """Idempotent schema creation and migrations."""
     conn.execute(_SCHEMA)
     for stmt in _INDEXES:
         conn.execute(stmt)
@@ -93,6 +90,38 @@ def migrate(conn: sqlite3.Connection) -> None:
     for stmt in _INDEXES_CHUNKS:
         conn.execute(stmt)
     conn.commit()
+
+    # Migration 1: drop notes.summary_path (Groq migration)
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(notes)").fetchall()}
+    if "summary_path" in cols:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute("""
+                CREATE TABLE notes_new (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL DEFAULT 'untitled',
+                    created_at TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    audio_path TEXT,
+                    transcript_path TEXT
+                )
+            """)
+            conn.execute("""
+                INSERT INTO notes_new (id, title, created_at, status, audio_path, transcript_path)
+                SELECT id, title, created_at, status, audio_path, transcript_path FROM notes
+            """)
+            conn.execute("DROP TABLE notes")
+            conn.execute("ALTER TABLE notes_new RENAME TO notes")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_notes_created_at ON notes(created_at DESC)"
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.execute("PRAGMA foreign_keys = ON")
 
 
 def migrate_stuck_recordings(conn: sqlite3.Connection) -> int:
@@ -119,7 +148,6 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict | None:
         "status": row["status"],
         "audioPath": row["audio_path"],
         "transcriptPath": row["transcript_path"],
-        "summaryPath": row["summary_path"],
     }
 
 

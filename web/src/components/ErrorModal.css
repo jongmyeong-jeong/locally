@@ -1,0 +1,73 @@
+.error-modal__backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.error-modal__card {
+  background: #ffffff;
+  padding: 24px;
+  border-radius: 12px;
+  max-width: 400px;
+  width: calc(100% - 48px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.error-modal__title {
+  font-size: 18px;
+  font-weight: 600;
+  color: #171717;
+  margin: 0;
+  line-height: 1.4;
+}
+
+.error-modal__body {
+  font-size: 14px;
+  color: #4d4d4d;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.error-modal__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+.error-modal__btn {
+  height: 36px;
+  padding: 0 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.error-modal__btn--primary {
+  background: #dc2626;
+  color: #ffffff;
+}
+
+.error-modal__btn--primary:hover {
+  background: #b91c1c;
+}
+
+.error-modal__btn--secondary {
+  background: #f4f4f5;
+  color: #171717;
+}
+
+.error-modal__btn--secondary:hover {
+  background: #e4e4e7;
+}

@@ -1,96 +1,56 @@
-import { Suspense, lazy } from 'react'
-import { Link, Navigate, Route, Routes } from 'react-router-dom'
+import { Suspense, lazy, useEffect, useState } from 'react'
+import { Route, Routes } from 'react-router-dom'
 import useSystemInfo from '@/hooks/useSystemInfo'
-import { useAppStore } from '@/stores/app'
+import ErrorModal from '@/components/ErrorModal'
 
-const NoteList = lazy(() => import('@/pages/NoteList'))
-const Upload = lazy(() => import('@/pages/Upload'))
 const Recording = lazy(() => import('@/pages/Recording'))
-const Transcribing = lazy(() => import('@/pages/Transcribing'))
-const Summary = lazy(() => import('@/pages/Summary'))
-const Glossary = lazy(() => import('@/pages/Glossary'))
-const ModelSetup = lazy(() => import('@/pages/ModelSetup'))
-const Settings = lazy(() => import('@/pages/Settings'))
-const PromptList = lazy(() => import('@/pages/PromptList'))
-const PromptDetail = lazy(() => import('@/pages/PromptDetail'))
-
-function NotFound() {
-  return (
-    <section className="mx-auto max-w-3xl p-6">
-      <h1 className="text-2xl font-semibold">페이지를 찾을 수 없습니다</h1>
-    </section>
-  )
-}
-
-// First-run gate: `/` routes to ModelSetup until a Whisper model is installed,
-// then falls through to NoteList. Plan §1 AC-3/4 + Phase E landing.
-function LandingGate() {
-  const { data: sysInfo, isLoading } = useSystemInfo()
-
-  if (isLoading) {
-    return (
-      <section className="mx-auto max-w-3xl p-6 text-sm text-muted-foreground">
-        불러오는 중...
-      </section>
-    )
-  }
-
-  if (!sysInfo?.modelReady) return <ModelSetup />
-  return <Navigate to="/notes" replace />
-}
 
 function RouteLoading() {
   return (
-    <section className="mx-auto max-w-3xl p-6 text-sm text-muted-foreground">
+    <section style={{ padding: '24px', fontSize: '14px', color: '#4d4d4d' }}>
       화면을 불러오는 중...
     </section>
   )
 }
 
-function Shell({ children }) {
-  const recordingStatus = useAppStore((s) => s.recording.status)
-  // AC1: 녹음 중/마이크 요청/finalize 단계에서만 헤더 숨김. error/idle은 표시.
-  const hideHeader = ['requestingMic', 'recording', 'finalizing'].includes(recordingStatus)
+// Shows a one-time modal when GROQ_API_KEY is not configured.
+// User can dismiss and still see Recording page, but the start button will
+// enforce the same check when clicked (done in Recording.jsx).
+function GroqKeyGate({ children }) {
+  const { data: sysInfo, isLoading } = useSystemInfo()
+  const [dismissed, setDismissed] = useState(false)
+
+  const keyMissing = !isLoading && sysInfo && sysInfo.groqConfigured === false
+
+  if (isLoading) {
+    return (
+      <section style={{ padding: '24px', fontSize: '14px', color: '#4d4d4d' }}>
+        불러오는 중...
+      </section>
+    )
+  }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
-      {!hideHeader && (
-        <header className="border-b">
-          <nav className="mx-auto max-w-3xl p-4 flex gap-4 text-sm">
-            <Link to="/" className="font-semibold">Locally</Link>
-            <Link to="/notes" className="text-muted-foreground hover:text-foreground">노트</Link>
-            <Link to="/upload" className="text-muted-foreground hover:text-foreground">업로드</Link>
-            <Link to="/recording" className="text-muted-foreground hover:text-foreground">녹음</Link>
-            <Link to="/glossary" className="text-muted-foreground hover:text-foreground">용어집</Link>
-            <Link to="/settings" className="text-muted-foreground hover:text-foreground">설정</Link>
-          </nav>
-        </header>
-      )}
-      <main>{children}</main>
-    </div>
+    <>
+      {children}
+      <ErrorModal
+        open={keyMissing && !dismissed}
+        errorType="api_key_missing"
+        onClose={() => setDismissed(true)}
+      />
+    </>
   )
 }
 
 export default function App() {
   return (
-    <Shell>
+    <GroqKeyGate>
       <Suspense fallback={<RouteLoading />}>
         <Routes>
-          <Route path="/" element={<LandingGate />} />
-          <Route path="/notes" element={<NoteList />} />
-          <Route path="/notes/:id" element={<Summary />} />
-          <Route path="/notes/:id/transcribing" element={<Transcribing />} />
-          <Route path="/notes/:id/summary" element={<Summary />} />
-          <Route path="/upload" element={<Upload />} />
-          <Route path="/recording" element={<Recording />} />
-          <Route path="/glossary" element={<Glossary />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/settings/model-setup" element={<ModelSetup />} />
-          <Route path="/settings/prompts" element={<PromptList />} />
-          <Route path="/settings/prompts/:id" element={<PromptDetail />} />
-          <Route path="*" element={<NotFound />} />
+          <Route path="/" element={<Recording />} />
+          <Route path="*" element={<Recording />} />
         </Routes>
       </Suspense>
-    </Shell>
+    </GroqKeyGate>
   )
 }

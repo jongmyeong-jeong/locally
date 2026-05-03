@@ -4,12 +4,10 @@ Layout (platform-agnostic via pathlib.Path.home()):
   ~/.locally/                 ← locally_home()
     ├── workspace/            ← workspace_root()
     │   ├── notes/
-    │   │   ├── transcripts/
-    │   │   └── summaries/
+    │   │   └── transcripts/
     │   ├── audio/
-    │   └── glossary.json
+    │   └── prompt.json
     ├── db.sqlite
-    ├── models/
     ├── logs/
     └── runtime.json
 
@@ -63,10 +61,6 @@ def transcripts_dir() -> Path:
     return _ensure(notes_dir() / "transcripts")
 
 
-def summaries_dir() -> Path:
-    return _ensure(notes_dir() / "summaries")
-
-
 def audio_dir() -> Path:
     return _ensure(workspace_root() / "audio")
 
@@ -75,16 +69,8 @@ def logs_dir() -> Path:
     return _ensure(locally_home() / "logs")
 
 
-def models_dir() -> Path:
-    return _ensure(locally_home() / "models")
-
-
-def glossary_path() -> Path:
-    return workspace_root() / "glossary.json"
-
-
-def prompts_path() -> Path:
-    return workspace_root() / "prompts.json"
+def prompt_path() -> Path:
+    return workspace_root() / "prompt.json"
 
 
 def db_path() -> Path:

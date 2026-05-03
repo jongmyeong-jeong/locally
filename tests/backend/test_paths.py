@@ -150,13 +150,10 @@ class TestPathResolvers:
         assert root == _tmp_home / ".locally"
 
     def test_subdirs_exist(self, _tmp_home):
-        for fn in (mod.notes_dir, mod.audio_dir, mod.logs_dir, mod.models_dir):
+        for fn in (mod.notes_dir, mod.audio_dir, mod.logs_dir):
             p = fn()
             assert p.exists()
             assert p.is_dir()
-
-    def test_glossary_path_points_under_workspace_root(self, _tmp_home):
-        assert mod.glossary_path() == _tmp_home / ".locally" / "workspace" / "glossary.json"
 
     def test_db_path_points_under_locally_home(self, _tmp_home):
         assert mod.db_path() == _tmp_home / ".locally" / "db.sqlite"

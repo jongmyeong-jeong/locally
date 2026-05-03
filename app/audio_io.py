@@ -1,13 +1,7 @@
-"""FFmpeg-based PCM loader for the mlx transcription path.
+"""FFmpeg-based PCM loader for the audio pipeline.
 
-Implements §2.4 of the consensus plan:
-  .omc/plans/consensus-transcription-progress-vad.md
-
-**mlx-path-only**: This module is imported exclusively by ``_run_mlx`` in
-``app/transcribe.py``.  It must NOT be imported on Windows/Linux (the CT2
-path uses faster-whisper's internal audio loader).  The macOS gate lives in
-``_run_mlx``; this module itself imposes no OS restriction so that unit tests
-can run cross-platform against a mocked subprocess.
+Decodes arbitrary audio files to 16 kHz mono float32 PCM via the bundled
+(or system) ffmpeg binary.  Used by the VAD live-recording path in server.py.
 """
 from __future__ import annotations
 
@@ -16,6 +10,11 @@ import subprocess
 from pathlib import Path
 
 import numpy as np
+
+
+class AudioIOError(Exception):
+    """Raised when ffmpeg is missing or exits with a non-zero status."""
+
 
 # ---------------------------------------------------------------------------
 # ffmpeg resolution (lazy — resolved on first call, not at import time)
@@ -27,13 +26,11 @@ _BUNDLED_FFMPEG = Path(__file__).resolve().parent.parent / "bin" / "ffmpeg"
 
 def _resolve_ffmpeg() -> str:
     """Locate ffmpeg binary; prefer bundled, fall back to PATH. Raises on miss."""
-    from app.transcribe import TranscriptionError
-
     if _BUNDLED_FFMPEG.exists():
         return str(_BUNDLED_FFMPEG)
     system = shutil.which("ffmpeg")
     if system is None:
-        raise TranscriptionError(
+        raise AudioIOError(
             "ffmpeg not found: expected bundled binary at "
             f"{_BUNDLED_FFMPEG} and no 'ffmpeg' on PATH. "
             "Install ffmpeg or ensure the bundled binary is present."
@@ -52,12 +49,10 @@ def load_pcm_16k_mono(audio_path: str) -> "np.ndarray":
 
     Raises
     ------
-    TranscriptionError
-        On ffmpeg non-zero exit.  The ffmpeg stderr tail (up to 512 bytes) is
-        included in the exception message for diagnosis (§2.9 observability).
+    AudioIOError
+        On ffmpeg not found or non-zero exit.  The ffmpeg stderr tail (up to
+        512 bytes) is included in the exception message for diagnosis.
     """
-    from app.transcribe import TranscriptionError
-
     ffmpeg = _resolve_ffmpeg()
     cmd = [
         ffmpeg,
@@ -80,7 +75,7 @@ def load_pcm_16k_mono(audio_path: str) -> "np.ndarray":
 
     if result.returncode != 0:
         stderr_text = result.stderr.decode("utf-8", errors="replace")[-512:]
-        raise TranscriptionError(
+        raise AudioIOError(
             f"ffmpeg failed (code {result.returncode}): {stderr_text}"
         )
 

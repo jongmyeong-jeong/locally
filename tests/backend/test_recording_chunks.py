@@ -1,11 +1,9 @@
 """Tests for app.recording_chunks CRUD and all_chunks_done semantics."""
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 
-from app import db, recording_chunks, transcribe, transcribe_queue
+from app import db, recording_chunks
 
 
 # ---------------------------------------------------------------------------
@@ -115,77 +113,3 @@ class TestInvalidStatus:
             recording_chunks.update_chunk_status(conn, chunk_id, "bogus")
 
 
-class TestSessionTranscribeQueueRetrySemantics:
-    def test_session_transcribe_queue_failed_after_two_attempts(self, tmp_home, monkeypatch):
-        """Step 5 retry semantics: first chunk fails twice → 'failed'; second succeeds.
-
-        Monkeypatches transcribe.run to raise TranscriptionError for the first
-        chunk's audio path and return ('ok', []) for any other path.
-        """
-        # We need a real DB doc + two chunks.
-        conn = db.open_db()
-        doc = db.create_note(conn, title="retry-test")
-        did = doc["id"]
-
-        # Insert two chunks manually so we know their IDs.
-        id0 = recording_chunks.insert_chunk(conn, did, seq=0, start_ms=0, end_ms=5000)
-        id1 = recording_chunks.insert_chunk(conn, did, seq=1, start_ms=5000, end_ms=10000)
-        conn.close()
-
-        # Create fake audio files (transcribe.run checks Path.exists()).
-        import tempfile
-        from pathlib import Path
-
-        tmp_dir = Path(tempfile.mkdtemp())
-        audio0 = tmp_dir / "chunk0.webm"
-        audio1 = tmp_dir / "chunk1.webm"
-        audio0.write_bytes(b"\x00" * 16)
-        audio1.write_bytes(b"\x00" * 16)
-
-        fail_path = str(audio0)
-
-        def fake_run(audio_path, *, model_dir=None, prompt=None, profile="file", progress_cb=None):
-            if audio_path == fail_path:
-                raise transcribe.TranscriptionError("simulated failure")
-            return ("ok text", [])
-
-        monkeypatch.setattr(transcribe, "run", fake_run)
-
-        async def _run():
-            q = transcribe_queue.SessionTranscribeQueue(
-                session_id=did,
-                note_id=did,
-                model_dir=None,
-                glossary_prompt=None,
-            )
-            await q.start()
-            await q.push(transcribe_queue.ChunkJob(
-                chunk_id=id0, note_id=did, seq=0,
-                start_ms=0, end_ms=5000, audio_path=str(audio0),
-            ))
-            await q.push(transcribe_queue.ChunkJob(
-                chunk_id=id1, note_id=did, seq=1,
-                start_ms=5000, end_ms=10000, audio_path=str(audio1),
-            ))
-            await q.drain()
-            await q.stop()
-            return q
-
-        q = asyncio.run(_run())
-
-        # First chunk should be failed after two attempts (retry_count=1 → terminal).
-        assert len(q.failed_ranges) == 1
-        assert q.failed_ranges[0]["seq"] == 0
-
-        # Second chunk should be 'success'.
-        conn2 = db.open_db()
-        rows = recording_chunks.get_chunks(conn2, did)
-        conn2.close()
-        chunk_by_seq = {r["seq"]: r for r in rows}
-        assert chunk_by_seq[0]["status"] == "failed"
-        assert chunk_by_seq[1]["status"] == "success"
-        assert chunk_by_seq[1]["text"] == "ok text"
-
-        # Cleanup.
-        import shutil
-        shutil.rmtree(tmp_dir, ignore_errors=True)
