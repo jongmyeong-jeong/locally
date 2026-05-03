@@ -3,8 +3,7 @@
 Layout (platform-agnostic via pathlib.Path.home()):
   ~/.lonta/             ← app_home()
     ├── data/                 ← data_root()
-    │   ├── notes/
-    │   │   └── transcripts/
+    │   ├── transcripts/      ← transcripts_dir()
     │   ├── audio/
     │   └── prompt.json
     ├── db.sqlite
@@ -53,12 +52,47 @@ def app_home() -> Path:
     return _ensure(Path.home() / ".lonta")
 
 
-def notes_dir() -> Path:
-    return _ensure(data_root() / "notes")
-
-
 def transcripts_dir() -> Path:
-    return _ensure(notes_dir() / "transcripts")
+    return _ensure(data_root() / "transcripts")
+
+
+def migrate_legacy_transcripts_dir() -> int:
+    """One-shot move of ``data/notes/transcripts/*`` → ``data/transcripts/*``.
+
+    Older builds nested transcripts under ``data/notes/transcripts/``. This
+    helper relocates any leftover ``.md`` files to the flat ``data/transcripts/``
+    layout and removes the now-empty ``notes/`` subtree. No-op when the legacy
+    directory is absent. Returns the number of files moved.
+
+    Safe to run on every startup: idempotent and short-circuits when the legacy
+    directory doesn't exist.
+    """
+    legacy_root = data_root() / "notes"
+    if not legacy_root.exists():
+        return 0
+    legacy_transcripts = legacy_root / "transcripts"
+    moved = 0
+    if legacy_transcripts.is_dir():
+        target_root = transcripts_dir()
+        for src in legacy_transcripts.iterdir():
+            if not src.is_file():
+                continue
+            dest = target_root / src.name
+            if dest.exists():
+                # Conflict: leave the newer file (already in flat dir) alone.
+                continue
+            src.replace(dest)
+            moved += 1
+        try:
+            legacy_transcripts.rmdir()
+        except OSError:
+            pass
+    try:
+        legacy_root.rmdir()
+    except OSError:
+        # Non-empty (e.g., user added their own files); leave it alone.
+        pass
+    return moved
 
 
 def audio_dir() -> Path:

@@ -1030,6 +1030,12 @@ def create_app() -> FastAPI:
     with db_mod.open_db() as conn:
         db_mod.migrate_stuck_recordings(conn)
 
+    # One-shot relocation of legacy data/notes/transcripts/ → data/transcripts/.
+    # Idempotent: returns 0 when the legacy directory is absent.
+    moved = paths.migrate_legacy_transcripts_dir()
+    if moved:
+        logger.info("transcripts_dir_migrated", {"moved_files": moved})
+
     return app
 
 

@@ -150,16 +150,57 @@ class TestPathResolvers:
         assert root == _tmp_home / ".lonta"
 
     def test_subdirs_exist(self, _tmp_home):
-        for fn in (mod.notes_dir, mod.audio_dir, mod.logs_dir):
+        for fn in (mod.transcripts_dir, mod.audio_dir, mod.logs_dir):
             p = fn()
             assert p.exists()
             assert p.is_dir()
+
+    def test_transcripts_dir_is_flat(self, _tmp_home):
+        assert mod.transcripts_dir() == _tmp_home / ".lonta" / "data" / "transcripts"
 
     def test_db_path_points_under_app_home(self, _tmp_home):
         assert mod.db_path() == _tmp_home / ".lonta" / "db.sqlite"
 
     def test_runtime_json_path_points_under_app_home(self, _tmp_home):
         assert runtime_json_path() == _tmp_home / ".lonta" / "runtime.json"
+
+
+# ── legacy transcripts dir migration ────────────────────────────────────
+
+
+class TestMigrateLegacyTranscriptsDir:
+    def test_no_legacy_dir_is_noop(self, _tmp_home):
+        assert mod.migrate_legacy_transcripts_dir() == 0
+
+    def test_moves_files_and_drops_legacy_tree(self, _tmp_home):
+        legacy = _tmp_home / ".lonta" / "data" / "notes" / "transcripts"
+        legacy.mkdir(parents=True)
+        (legacy / "a.md").write_text("alpha", encoding="utf-8")
+        (legacy / "b.md").write_text("beta", encoding="utf-8")
+
+        moved = mod.migrate_legacy_transcripts_dir()
+        flat = _tmp_home / ".lonta" / "data" / "transcripts"
+
+        assert moved == 2
+        assert (flat / "a.md").read_text(encoding="utf-8") == "alpha"
+        assert (flat / "b.md").read_text(encoding="utf-8") == "beta"
+        assert not legacy.exists()
+        assert not legacy.parent.exists()  # data/notes/ also gone
+
+    def test_conflict_keeps_destination(self, _tmp_home):
+        legacy = _tmp_home / ".lonta" / "data" / "notes" / "transcripts"
+        legacy.mkdir(parents=True)
+        (legacy / "dup.md").write_text("legacy", encoding="utf-8")
+        flat = _tmp_home / ".lonta" / "data" / "transcripts"
+        flat.mkdir(parents=True)
+        (flat / "dup.md").write_text("flat-wins", encoding="utf-8")
+
+        moved = mod.migrate_legacy_transcripts_dir()
+
+        assert moved == 0
+        assert (flat / "dup.md").read_text(encoding="utf-8") == "flat-wins"
+        # Legacy file is left in place because we refuse to overwrite.
+        assert (legacy / "dup.md").exists()
 
 
 # ── runtime.json ────────────────────────────────────────────────────────
