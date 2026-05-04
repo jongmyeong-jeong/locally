@@ -31,6 +31,14 @@ function StopIcon() {
   )
 }
 
+// Inject CSS keyframe for spinner animation (idempotent — only injected once)
+if (typeof document !== 'undefined' && !document.getElementById('bada-spin-keyframe')) {
+  const style = document.createElement('style')
+  style.id = 'bada-spin-keyframe'
+  style.textContent = '@keyframes bada-spin { to { transform: rotate(360deg); } }'
+  document.head.appendChild(style)
+}
+
 // Page background and layout styles (raw hex/px — no CSS vars per spec)
 const PAGE_STYLE = {
   minHeight: '100vh',
@@ -102,13 +110,88 @@ const BTN_DOWNLOAD = {
   gap: '8px',
 }
 
+function CheckIcon({ color }) {
+  return (
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M5 13l4 4L19 7" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
+
+function TranscribingView() {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '24px' }}>
+      <div style={{
+        width: 40, height: 40, borderRadius: '50%',
+        border: '3px solid #fecaca', borderTopColor: '#dc2626',
+        animation: 'bada-spin 1s linear infinite',
+      }} />
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+        <span style={{ fontFamily: 'Inter, sans-serif', fontWeight: 600, fontSize: '18px', color: '#171717' }}>
+          전사하는 중이에요
+        </span>
+        <span style={{ fontFamily: 'Inter, sans-serif', fontWeight: 400, fontSize: '14px', color: '#71717a' }}>
+          잠시만 기다려 주세요
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function DoneView({ noteId, onDownload, onGoHome }) {
+  const canDownload = noteId !== null
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '24px' }}>
+      <div style={{
+        width: 64, height: 64, borderRadius: '50%',
+        background: '#dcfce7', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      }}>
+        <CheckIcon color="#16a34a" />
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+        <span style={{ fontFamily: 'Inter, sans-serif', fontWeight: 600, fontSize: '18px', color: '#171717' }}>
+          전사가 완료됐어요
+        </span>
+        <span style={{ fontFamily: 'Inter, sans-serif', fontWeight: 400, fontSize: '14px', color: '#71717a' }}>
+          파일이 자동으로 저장되었습니다
+        </span>
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+        <button
+          style={{
+            ...BTN_DOWNLOAD,
+            ...(canDownload ? {} : { opacity: 0.4, cursor: 'not-allowed' }),
+          }}
+          onClick={canDownload ? onDownload : undefined}
+          disabled={!canDownload}
+          type="button"
+        >
+          ↓ 파일로 내려받기
+        </button>
+        <button
+          style={{
+            background: 'none', border: 'none', color: '#71717a',
+            fontSize: '14px', cursor: 'pointer', fontFamily: 'Inter, sans-serif',
+            textDecoration: 'underline',
+          }}
+          onClick={onGoHome}
+          type="button"
+        >
+          ← 시작 화면으로
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function Recording() {
   const { data: sysInfo } = useSystemInfo()
   const setRecording = useAppStore((s) => s.setRecording)
   const resetRecording = useAppStore((s) => s.resetRecording)
 
   // UI state
-  const [recordingState, setRecordingState] = useState('idle') // 'idle' | 'recording'
+  const [recordingState, setRecordingState] = useState('idle') // 'idle' | 'recording' | 'transcribing' | 'done'
+  const [liveTranscriptionFailed, setLiveTranscriptionFailed] = useState(false)
   const [elapsedMs, setElapsedMs] = useState(0)
   const [stream, setStream] = useState(null)
   const [noteId, setNoteId] = useState(null)
@@ -242,6 +325,7 @@ export default function Recording() {
     pendingUploadsRef.current.clear()
     setStream(micStream)
     setNoteId(null)
+    setLiveTranscriptionFailed(false)
 
     mr.ondataavailable = (ev) => {
       if (!ev.data || ev.data.size === 0) return
@@ -271,9 +355,13 @@ export default function Recording() {
     // We do NOT render live transcript text (RealtimeTranscript unmounted per spec C-UI).
     esRef.current = transcriptStream(session.id, {
       onGroqError: (data) => {
-        const errorType = data?.error_type
-        // Per spec C2: network_failed_max_retries → do nothing (silent per spec)
-        if (errorType === 'network_failed_max_retries') return
+        const errorType = data?.errorType  // camelCase — F2 fix (was data?.error_type)
+        if (errorType === 'network_failed_max_retries') {
+          setLiveTranscriptionFailed(true)
+          if (esRef.current) { esRef.current(); esRef.current = null }
+          openErrorModal('network_failed_max_retries')
+          return
+        }
         // Map other error types to modal
         const mapped =
           errorType === 'rate_limit' ? 'rate_limit'
@@ -301,7 +389,7 @@ export default function Recording() {
     clearTimer()
     setElapsedMs(0)
 
-    // Close SSE stream
+    // Close SSE stream (may already be null if liveTranscriptionFailed)
     if (esRef.current) { esRef.current(); esRef.current = null }
 
     // Flush final MediaRecorder chunk
@@ -332,7 +420,40 @@ export default function Recording() {
       return
     }
 
-    // Finalize via SSE-aware path
+    const _resetState = () => {
+      resetRecording()
+      sessionIdRef.current = null
+      startedAtRef.current = null
+      pendingUploadsRef.current.clear()
+      stopInFlightRef.current = false
+    }
+
+    // Live transcription failed branch: skip transcription, go straight to idle
+    if (liveTranscriptionFailed) {
+      setLiveTranscriptionFailed(false)
+      api.finalizeRecording(
+        sessionId,
+        { durationSec, skipTranscribe: true },
+        {
+          complete: () => {
+            _resetState()
+            setRecordingState('idle')
+          },
+          error: () => {
+            _resetState()
+            setRecordingState('idle')
+          },
+          transportError: () => {
+            _resetState()
+            setRecordingState('idle')
+          },
+        },
+      )
+      return
+    }
+
+    // Normal finalize path: show transcribing screen, then done
+    setRecordingState('transcribing')
     api.finalizeRecording(
       sessionId,
       { durationSec },
@@ -343,35 +464,28 @@ export default function Recording() {
             noteIdRef.current = nid
             setNoteId(nid)
           }
-          resetRecording()
-          sessionIdRef.current = null
-          startedAtRef.current = null
-          pendingUploadsRef.current.clear()
-          stopInFlightRef.current = false
-          setRecordingState('idle')
+          _resetState()
+          setRecordingState('done')
         },
         error: (evt) => {
-          const errVal = evt.payload?.error
-          alert(`녹음 저장 실패: ${errVal ?? '알 수 없는 오류'}`)
-          resetRecording()
-          sessionIdRef.current = null
-          startedAtRef.current = null
-          pendingUploadsRef.current.clear()
-          stopInFlightRef.current = false
-          setRecordingState('idle')
+          // Partial .md may exist — show done screen with error modal
+          const nid = evt.payload?.noteId ?? noteIdRef.current
+          if (nid) {
+            noteIdRef.current = nid
+            setNoteId(nid)
+          }
+          openErrorModal('finalize_partial')
+          _resetState()
+          setRecordingState('done')
         },
-        transportError: (err) => {
-          alert(`녹음 저장 실패: ${err?.message ?? ''}`)
-          resetRecording()
-          sessionIdRef.current = null
-          startedAtRef.current = null
-          pendingUploadsRef.current.clear()
-          stopInFlightRef.current = false
+        transportError: () => {
+          openErrorModal('transport_error')
+          _resetState()
           setRecordingState('idle')
         },
       },
     )
-  }, [clearTimer, stopTracks, resetRecording, waitForPendingUploads])
+  }, [liveTranscriptionFailed, clearTimer, stopTracks, resetRecording, waitForPendingUploads, openErrorModal])
 
   const handleStopFromModal = useCallback(() => {
     closeErrorModal()
@@ -415,13 +529,10 @@ export default function Recording() {
     }
   }, [clearTimer])
 
-  const isRecording = recordingState === 'recording'
-  const canDownload = !isRecording && noteId !== null
-
   return (
     <div style={PAGE_STYLE}>
       {/* Idle state — Figma node 465:7092 */}
-      {!isRecording && (
+      {recordingState === 'idle' && (
         <div style={IDLE_CONTAINER}>
           <FlipCardTimer elapsedMs={0} />
           <button
@@ -432,20 +543,11 @@ export default function Recording() {
             <MicIcon />
             녹음 시작
           </button>
-          {canDownload && (
-            <button
-              style={BTN_DOWNLOAD}
-              onClick={handleDownload}
-              type="button"
-            >
-              원문 다운로드
-            </button>
-          )}
         </div>
       )}
 
       {/* Recording state — Figma node 465:7219 / 60min+ 468:7315 */}
-      {isRecording && (
+      {recordingState === 'recording' && (
         <div style={RECORDING_CONTAINER}>
           <div style={INNER_SECTION}>
             <RecIndicator pulsing />
@@ -458,9 +560,25 @@ export default function Recording() {
             type="button"
           >
             <StopIcon />
-            녹음 종료
+            정지
           </button>
         </div>
+      )}
+
+      {/* Transcribing state */}
+      {recordingState === 'transcribing' && <TranscribingView />}
+
+      {/* Done state */}
+      {recordingState === 'done' && (
+        <DoneView
+          noteId={noteId}
+          onDownload={handleDownload}
+          onGoHome={() => {
+            setRecordingState('idle')
+            setNoteId(null)
+            setLiveTranscriptionFailed(false)
+          }}
+        />
       )}
 
       <ErrorModal

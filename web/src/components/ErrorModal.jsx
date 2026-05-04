@@ -2,6 +2,48 @@ import { useEffect, useRef } from 'react'
 import './ErrorModal.css'
 
 const CONTENT = {
+  network_failed_max_retries: {
+    title: '실시간 전사 연결 실패',
+    body: '음성 파일만 저장됩니다. 녹음 종료 후 파일을 내려받을 수 있습니다.',
+    buttons: (onClose) => [
+      <button
+        key="ok"
+        className="error-modal__btn error-modal__btn--secondary"
+        onClick={onClose}
+        autoFocus
+      >
+        확인
+      </button>,
+    ],
+  },
+  finalize_partial: {
+    title: '전사 중 오류 발생',
+    body: '일부 내용이 누락될 수 있습니다. 저장된 파일을 확인하세요.',
+    buttons: (onClose) => [
+      <button
+        key="ok"
+        className="error-modal__btn error-modal__btn--secondary"
+        onClick={onClose}
+        autoFocus
+      >
+        확인
+      </button>,
+    ],
+  },
+  transport_error: {
+    title: '저장 중 오류 발생',
+    body: '네트워크 문제로 저장에 실패했습니다. 다시 시도해 주세요.',
+    buttons: (onClose) => [
+      <button
+        key="ok"
+        className="error-modal__btn error-modal__btn--secondary"
+        onClick={onClose}
+        autoFocus
+      >
+        확인
+      </button>,
+    ],
+  },
   rate_limit: {
     title: '오늘 groq 무료 한도 소진',
     body: '내일 다시 시도하세요.',
