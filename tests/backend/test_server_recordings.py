@@ -291,3 +291,117 @@ class TestStreamingChunkAppend:
         body = asyncio.run(endpoint(session["id"], upload, 0))
         assert body["bytes_written"] == 1024 * 1024 + 17
         assert body["noteId"]
+
+
+# ---------------------------------------------------------------------------
+# BA1–BA3: skipTranscribe finalize path
+# ---------------------------------------------------------------------------
+
+
+class TestSkipTranscribeFinalize:
+    """BA1: skipTranscribe=true → audio moved, .md not created, status=audio_only."""
+
+    def test_skip_transcribe_audio_moved_md_absent(self, client, tmp_path):
+        """BA1: webm is moved to audio_dir; no .md file is written."""
+        from app import paths
+
+        # Start session and upload one chunk so a note row exists.
+        sid = client.post("/api/recordings", json={"title": "skip-test"}).json()["id"]
+        _upload_chunk(client, sid, 0, b"\x00" * 128)
+
+        r = client.post(
+            f"/api/recordings/{sid}/finalize",
+            json={"durationSec": 5.0, "skipTranscribe": True},
+        )
+        assert r.status_code == 200, r.text
+        events = _parse_sse(r.text)
+        complete_events = [e for e in events if e.get("event") == "complete"]
+        assert complete_events, f"No complete event; events={events}"
+        body = complete_events[0]["data"]
+
+        # Audio file must exist in audio_dir.
+        assert body["status"] == "audio_only"
+        assert body["transcriptPath"] is None
+        audio_path = Path(body["audioPath"])
+        assert audio_path.exists(), f"audio file missing: {audio_path}"
+
+        # No .md file should have been created.
+        md_files = list(paths.transcripts_dir().glob("*.md"))
+        assert md_files == [], f"Unexpected .md files: {md_files}"
+
+    def test_skip_transcribe_db_status_audio_only(self, client):
+        """BA2: DB note status = 'audio_only' after skipTranscribe finalize."""
+        sid = client.post("/api/recordings", json={"title": "skip-db"}).json()["id"]
+        chunk_resp = _upload_chunk(client, sid, 0, b"\x00" * 128)
+        note_id = chunk_resp.json()["noteId"]
+
+        r = client.post(
+            f"/api/recordings/{sid}/finalize",
+            json={"durationSec": 5.0, "skipTranscribe": True},
+        )
+        assert r.status_code == 200, r.text
+        events = _parse_sse(r.text)
+        assert any(e.get("event") == "complete" for e in events)
+
+        note = client.get(f"/api/notes/{note_id}").json()
+        assert note["status"] == "audio_only"
+
+    def test_finalize_twice_second_returns_404(self, client):
+        """BA3: Second finalize call with the same session_id returns 404."""
+        sid = client.post("/api/recordings", json={"title": "idem"}).json()["id"]
+        _upload_chunk(client, sid, 0, b"\x00" * 128)
+
+        r1 = client.post(
+            f"/api/recordings/{sid}/finalize",
+            json={"durationSec": 5.0},
+        )
+        assert r1.status_code == 200
+
+        # Second finalize — session is gone.
+        r2 = client.post(
+            f"/api/recordings/{sid}/finalize",
+            json={"durationSec": 5.0},
+        )
+        assert r2.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# BA4 booster: drain() spy — finalize passes retry_sleep_sec=5, max_retries=5
+# ---------------------------------------------------------------------------
+
+
+class TestFinalizeCallsDrainArgs:
+    """BA4-ext: finalize handler calls sq.drain(retry_sleep_sec=5, max_retries=5)."""
+
+    def test_finalize_calls_drain_with_5sec_5retries(self, client, monkeypatch):
+        """Spy on SessionTranscribeQueue.drain to verify finalize passes correct args."""
+        from unittest.mock import AsyncMock, call
+
+        import app.transcribe_queue as tq_mod
+
+        drain_calls: list[dict] = []
+        original_drain = tq_mod.SessionTranscribeQueue.drain
+
+        async def _spy_drain(self, retry_sleep_sec=60, max_retries=5):
+            drain_calls.append({"retry_sleep_sec": retry_sleep_sec, "max_retries": max_retries})
+            # Call through so the queue actually drains (avoids hanging).
+            await original_drain(self, retry_sleep_sec=retry_sleep_sec, max_retries=max_retries)
+
+        monkeypatch.setattr(tq_mod.SessionTranscribeQueue, "drain", _spy_drain)
+
+        sid = client.post("/api/recordings", json={"title": "drain-spy"}).json()["id"]
+        _upload_chunk(client, sid, 0, b"\x00" * 128)
+
+        r = client.post(
+            f"/api/recordings/{sid}/finalize",
+            json={"durationSec": 5.0},
+        )
+        assert r.status_code == 200, r.text
+        events = _parse_sse(r.text)
+        assert any(e.get("event") == "complete" for e in events)
+
+        assert len(drain_calls) >= 1, "drain() was never called during finalize"
+        # The finalize path must pass retry_sleep_sec=5, max_retries=5.
+        assert drain_calls[0] == {"retry_sleep_sec": 5, "max_retries": 5}, (
+            f"drain() called with wrong args: {drain_calls[0]}"
+        )

@@ -302,3 +302,117 @@ async def test_retry_exhausted_5_failures(mock_concat, mock_db):
     fr = q.failed_ranges[0]
     assert fr["start_ms"] == 0
     assert fr["end_ms"] == 60_000
+
+
+# ---------------------------------------------------------------------------
+# BA4: drain() injects retry_sleep_sec — asyncio.sleep called with injected value
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_drain_retry_sleep_sec_injected(mock_concat, mock_db):
+    """BA4: drain(retry_sleep_sec=0, max_retries=5) passes the value to asyncio.sleep."""
+    import app.transcribe_queue as tq_mod
+    tq_mod._on_chunk_transcribed = None
+
+    sleep_calls: list[float] = []
+
+    async def _recording_sleep(secs):
+        sleep_calls.append(secs)
+
+    with patch(
+        "app.transcribe_queue.groq_client.transcribe_audio",
+        side_effect=GroqNetworkError("persistent error"),
+    ), patch("asyncio.sleep", side_effect=_recording_sleep):
+        q = SessionTranscribeQueue("sess-drain-sleep-1", "note-1", prompt=None)
+        await q.start()
+
+        try:
+            # Push 3 chunks (30 000ms < 60 000ms threshold) so no auto-flush occurs.
+            # drain() will dispatch this residual batch with retry_sleep_sec=0.
+            for i in range(3):
+                job = _make_chunk_job(i, i, start_ms=i * 10_000, duration_ms=10_000)
+                await q.push(job)
+            await q.drain(retry_sleep_sec=0, max_retries=5)
+        finally:
+            await q.stop()
+
+    # 5 retries → 4 sleeps between attempts, each with value 0
+    assert sleep_calls == [0, 0, 0, 0]
+
+
+# ---------------------------------------------------------------------------
+# BA5: network_failed_max_retries → SSE groq_error callback fired
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_network_failed_fires_groq_error_sse(mock_concat, mock_db):
+    """BA5: 5 GroqNetworkError exhaustions → _push_groq_error_event called with
+    errorType='network_failed_max_retries'."""
+    import app.transcribe_queue as tq_mod
+
+    groq_error_calls: list[tuple] = []
+
+    async def _fake_groq_error_cb(session_id, error_type, details):
+        groq_error_calls.append((session_id, error_type, details))
+
+    tq_mod._on_chunk_transcribed = None
+    tq_mod._on_groq_error = _fake_groq_error_cb
+
+    try:
+        with patch(
+            "app.transcribe_queue.groq_client.transcribe_audio",
+            side_effect=GroqNetworkError("persistent error"),
+        ), patch("asyncio.sleep", new_callable=AsyncMock):
+            q = SessionTranscribeQueue("sess-sse-fail-1", "note-1", prompt=None)
+            await q.start()
+
+            try:
+                for i in range(6):
+                    job = _make_chunk_job(i, i, start_ms=i * 10_000, duration_ms=10_000)
+                    await q.push(job)
+                await q.drain()
+            finally:
+                await q.stop()
+    finally:
+        tq_mod._on_groq_error = None
+
+    assert len(groq_error_calls) == 1
+    _sid, error_type, details = groq_error_calls[0]
+    assert error_type == "network_failed_max_retries"
+    assert "batch_seq" in details
+
+
+# ---------------------------------------------------------------------------
+# BA6: _live_failed latch — push() after fail is silently discarded
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_live_failed_latch_discards_push(mock_concat, mock_db):
+    """BA6: After _live_failed=True, push() adds nothing to the queue."""
+    import app.transcribe_queue as tq_mod
+    tq_mod._on_chunk_transcribed = None
+    tq_mod._on_groq_error = None
+
+    q = SessionTranscribeQueue("sess-latch-1", "note-1", prompt=None)
+    await q.start()
+
+    try:
+        # Manually set the latch (simulating a prior network exhaustion).
+        q._live_failed = True
+
+        # Record current queue size (should be 0 before and after).
+        size_before = q._queue.qsize()
+        job = _make_chunk_job(1, 0, start_ms=0, duration_ms=10_000)
+        await q.push(job)
+        size_after = q._queue.qsize()
+
+        assert size_before == size_after, (
+            f"Queue grew after push() with _live_failed=True: {size_before} → {size_after}"
+        )
+        # Also confirm pending chunks list is empty.
+        assert q._pending_chunks == []
+    finally:
+        await q.stop()

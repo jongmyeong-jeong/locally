@@ -78,6 +78,10 @@ class _BatchJob:
     """A collection of VAD chunks that will be concatenated and transcribed together."""
 
     chunks: list[_PendingChunk] = field(default_factory=list)
+    # Per-batch retry overrides.  None means use the module-level constants.
+    # drain() sets these to inject finalize-path values (e.g. 5s × 5).
+    retry_sleep_sec: int | None = None
+    max_retries: int | None = None
 
     @property
     def start_ms(self) -> int:
@@ -135,6 +139,11 @@ class SessionTranscribeQueue:
         # Batch sequence counter (incremented per dispatched batch).
         self._batch_seq: int = 0
 
+        # One-way latch: set to True when the live worker exhausts all network
+        # retries.  Subsequent push() calls are silently discarded.  drain()
+        # ignores this flag so finalize can still flush any buffered chunks.
+        self._live_failed: bool = False
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -145,7 +154,13 @@ class SessionTranscribeQueue:
             self._worker_task = asyncio.create_task(self._worker_loop())
 
     async def push(self, job: ChunkJob) -> None:
-        """Accumulate a VAD chunk.  Dispatches a batch when threshold is reached."""
+        """Accumulate a VAD chunk.  Dispatches a batch when threshold is reached.
+
+        If _live_failed is True (network retries exhausted), the job is
+        silently discarded — no new transcription work is enqueued.
+        """
+        if self._live_failed:
+            return
         duration_ms = job.end_ms - job.start_ms
         pending = _PendingChunk(
             chunk_id=job.chunk_id,
@@ -167,17 +182,30 @@ class SessionTranscribeQueue:
         if batch_to_dispatch is not None:
             await self._queue.put(batch_to_dispatch)
 
-    async def drain(self) -> None:
+    async def drain(
+        self,
+        retry_sleep_sec: int = 60,
+        max_retries: int = 5,
+    ) -> None:
         """Flush remaining pending chunks, then block until all batches are done.
 
         Called on recording end.  Flushes any < 60 s remainder as a final batch,
         then waits until _active_jobs == 0.
+
+        Args:
+            retry_sleep_sec: Seconds to sleep between GroqNetworkError retries.
+                Defaults to 60 (the live-worker policy).  Pass a smaller value
+                (e.g. 5) for the finalize path.
+            max_retries: Maximum number of GroqNetworkError retries per batch.
+                Defaults to 5.
         """
         batch_to_dispatch = None
         async with self._state_lock:
             if self._pending_chunks:
                 batch_to_dispatch = self._flush_pending_locked()
         if batch_to_dispatch is not None:
+            batch_to_dispatch.retry_sleep_sec = retry_sleep_sec
+            batch_to_dispatch.max_retries = max_retries
             await self._queue.put(batch_to_dispatch)
         await self._idle_event.wait()
 
@@ -287,9 +315,14 @@ class SessionTranscribeQueue:
                 )
                 return
 
-            # 4. Call groq with up to _MAX_NETWORK_RETRIES for network errors.
+            # 4. Call groq with retry policy from the batch (set by drain() for
+            #    the finalize path) or fall back to module-level constants (live
+            #    worker path).  This avoids a shared-state race between concurrent
+            #    batches.
+            retry_sleep_sec = batch.retry_sleep_sec if batch.retry_sleep_sec is not None else _NETWORK_RETRY_SLEEP
+            max_retries = batch.max_retries if batch.max_retries is not None else _MAX_NETWORK_RETRIES
             result = None
-            for attempt in range(1, _MAX_NETWORK_RETRIES + 1):
+            for attempt in range(1, max_retries + 1):
                 try:
                     result = await asyncio.to_thread(
                         groq_client.transcribe_audio,
@@ -303,22 +336,25 @@ class SessionTranscribeQueue:
                         "GroqNetworkError batch seq=%d attempt=%d/%d session=%s: %s",
                         batch.seq,
                         attempt,
-                        _MAX_NETWORK_RETRIES,
+                        max_retries,
                         self._session_id,
                         exc,
                     )
-                    if attempt < _MAX_NETWORK_RETRIES:
-                        await asyncio.sleep(_NETWORK_RETRY_SLEEP)
+                    if attempt < max_retries:
+                        await asyncio.sleep(retry_sleep_sec)
                     else:
-                        # All retries exhausted.
-                        # Per spec C-Error C2: 5x network retry failure produces NO
-                        # user-facing notification.  Failure is recorded only in the
-                        # .md file at finalize time via `failed_ranges`.
+                        # All retries exhausted — notify frontend via SSE and
+                        # latch the session so no further pushes are accepted.
                         logger.error(
                             "Batch seq=%d failed after %d retries (network) session=%s",
                             batch.seq,
-                            _MAX_NETWORK_RETRIES,
+                            max_retries,
                             self._session_id,
+                        )
+                        self._live_failed = True
+                        await self._push_groq_error_event(
+                            "network_failed_max_retries",
+                            {"batch_seq": batch.seq, "session_id": self._session_id},
                         )
                         _cleanup(batch_wav)
                         batch_wav = None

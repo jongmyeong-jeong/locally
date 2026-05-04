@@ -42,7 +42,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 import platform
 
@@ -173,8 +173,8 @@ async def _push_groq_error(
     """Push a groq_error SSE event to the per-session queue, if registered.
 
     error_type is one of: "rate_limit", "server_error", "api_key_missing",
-    "client_error", "concat_error", "unexpected_error".
-    ("network_failed_max_retries" is NOT pushed per spec C2 — silent.)
+    "client_error", "concat_error", "unexpected_error",
+    "network_failed_max_retries".
     """
     q = _TRANSCRIPT_SSE_QUEUES.get(session_id)
     if q is None:
@@ -325,9 +325,12 @@ class RecordingStartJSON(BaseModel):
     title: str | None = None
 
 
-class RecordingFinalizeJSON(BaseModel):
+class FinalizeRequest(BaseModel):
     title: str | None = None
-    durationSec: float | None = None
+    duration_sec: float | None = Field(default=None, alias="durationSec")
+    skip_transcribe: bool = Field(default=False, alias="skipTranscribe")
+
+    model_config = ConfigDict(populate_by_name=True)
 
 
 # ---------------------------------------------------------------------------
@@ -785,10 +788,11 @@ def create_app() -> FastAPI:
     async def finalize_recording(
         session_id: str,
         request: Request,
-        body: RecordingFinalizeJSON | None = None,
+        body: FinalizeRequest | None = None,
     ) -> StreamingResponse:
         title = body.title if body is not None else None
-        duration = body.durationSec if body is not None else None
+        duration = body.duration_sec if body is not None else None
+        skip_transcribe = body.skip_transcribe if body is not None else False
 
         # Validate session exists before entering SSE producer.
         session_check = recordings_mod.get_session(session_id)
@@ -893,69 +897,90 @@ def create_app() -> FastAPI:
                             {"discarded_ms_range": discarded},
                         )
 
-                # 3. Drain the queue — wait for all pre-transcription jobs.
-                await queue.put(
-                    _sse_event("progress", {"status": "draining", "done": 0})
-                )
-                sq = await transcribe_queue.get_session_queue(session_id)
-                if sq is not None:
-                    await sq.drain()
-                await queue.put(
-                    _sse_event("progress", {"status": "drained"})
-                )
+                if skip_transcribe:
+                    # skip_transcribe path: audio file already moved; just
+                    # update DB status to 'audio_only' and emit complete.
+                    def _mark_audio_only() -> None:
+                        with db_mod.open_db() as conn:
+                            db_mod.update_note(conn, note_id, status="audio_only")
 
-                # 4. (Option H retry removed — retries handled by groq_client
-                #     at batch level; failed_ranges recorded in .md by markdown_writer.)
-
-                # 5. Assemble transcript + persist note row in one off-loop step.
-                #    Single DB connection covers chunks fetch, note update, and
-                #    transcript file write to keep the event loop unblocked.
-                def _persist_transcript() -> tuple[Path, bool, bool]:
-                    with db_mod.open_db() as conn:
-                        all_done_local = recording_chunks.all_chunks_done(conn, note_id)
-                        chunks_local = recording_chunks.get_chunks(conn, note_id)
-                        note_row_local = db_mod.get_note(conn, note_id)
-                        text_body = (
-                            "\n".join(c["text"] for c in chunks_local if c.get("text"))
-                            if chunks_local
-                            else ""
+                    await asyncio.to_thread(_mark_audio_only)
+                    await queue.put(
+                        _sse_event(
+                            "complete",
+                            {
+                                "status": "audio_only",
+                                "noteId": note_id,
+                                "audioPath": session_audio_path,
+                                "transcriptPath": None,
+                            },
                         )
-                        title_local = (
-                            note_row_local["title"] if note_row_local else title
-                        )
-                        basename_local = paths.audio_basename(
-                            title_local, datetime.now(), note_id=note_id
-                        )
-                        out_path_local = paths.transcripts_dir() / f"{basename_local}.md"
-                        out_path_local.parent.mkdir(parents=True, exist_ok=True)
-                        out_path_local.write_text(text_body, encoding="utf-8")
-                        db_mod.update_note(
-                            conn,
-                            note_id,
-                            status="transcribed",
-                            transcript_path=str(out_path_local),
-                        )
-                        return out_path_local, all_done_local, bool(chunks_local)
-
-                out_path, all_done, has_chunks = await asyncio.to_thread(_persist_transcript)
-                if not all_done and has_chunks:
-                    logger.warning(
-                        "finalize_chunks_not_all_done",
-                        {"session_id": session_id, "note_id": note_id},
+                    )
+                else:
+                    # 3. Drain the queue — wait for all pre-transcription jobs.
+                    #    Use 5s retry sleep for the finalize path (vs 60s live).
+                    await queue.put(
+                        _sse_event("progress", {"status": "draining", "done": 0})
+                    )
+                    sq = await transcribe_queue.get_session_queue(session_id)
+                    if sq is not None:
+                        await sq.drain(retry_sleep_sec=5, max_retries=5)
+                    await queue.put(
+                        _sse_event("progress", {"status": "drained"})
                     )
 
-                # 6. Emit complete event.
-                await queue.put(
-                    _sse_event(
-                        "complete",
-                        {
-                            "status": "completed",
-                            "noteId": note_id,
-                            "audioPath": session_audio_path,
-                            "transcriptPath": str(out_path),
-                        },
+                    # 4. (Option H retry removed — retries handled by groq_client
+                    #     at batch level; failed_ranges recorded in .md by markdown_writer.)
+
+                    # 5. Assemble transcript + persist note row in one off-loop step.
+                    #    Single DB connection covers chunks fetch, note update, and
+                    #    transcript file write to keep the event loop unblocked.
+                    def _persist_transcript() -> tuple[Path, bool, bool]:
+                        with db_mod.open_db() as conn:
+                            all_done_local = recording_chunks.all_chunks_done(conn, note_id)
+                            chunks_local = recording_chunks.get_chunks(conn, note_id)
+                            note_row_local = db_mod.get_note(conn, note_id)
+                            text_body = (
+                                "\n".join(c["text"] for c in chunks_local if c.get("text"))
+                                if chunks_local
+                                else ""
+                            )
+                            title_local = (
+                                note_row_local["title"] if note_row_local else title
+                            )
+                            basename_local = paths.audio_basename(
+                                title_local, datetime.now(), note_id=note_id
+                            )
+                            out_path_local = paths.transcripts_dir() / f"{basename_local}.md"
+                            out_path_local.parent.mkdir(parents=True, exist_ok=True)
+                            out_path_local.write_text(text_body, encoding="utf-8")
+                            db_mod.update_note(
+                                conn,
+                                note_id,
+                                status="transcribed",
+                                transcript_path=str(out_path_local),
+                            )
+                            return out_path_local, all_done_local, bool(chunks_local)
+
+                    out_path, all_done, has_chunks = await asyncio.to_thread(_persist_transcript)
+                    if not all_done and has_chunks:
+                        logger.warning(
+                            "finalize_chunks_not_all_done",
+                            {"session_id": session_id, "note_id": note_id},
+                        )
+
+                    # 6. Emit complete event.
+                    await queue.put(
+                        _sse_event(
+                            "complete",
+                            {
+                                "status": "completed",
+                                "noteId": note_id,
+                                "audioPath": session_audio_path,
+                                "transcriptPath": str(out_path),
+                            },
+                        )
                     )
-                )
 
             finally:
                 # 7. Notify transcript-stream SSE clients before removing queues.
