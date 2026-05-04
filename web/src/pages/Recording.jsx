@@ -427,61 +427,58 @@ export default function Recording() {
       pendingUploadsRef.current.clear()
       stopInFlightRef.current = false
     }
+    const _captureNoteId = (evt) => {
+      const nid = evt?.payload?.noteId ?? noteIdRef.current
+      if (nid) {
+        noteIdRef.current = nid
+        setNoteId(nid)
+      }
+    }
+    const _transitionTo = (next) => {
+      _resetState()
+      setRecordingState(next)
+    }
 
-    // Live transcription failed branch: skip transcription, go straight to idle
+    // Live transcription failed branch: skip transcription, go straight to idle.
+    // All three SSE outcomes (complete/error/transportError) collapse to the
+    // same idle transition because no transcript is expected on this path.
     if (liveTranscriptionFailed) {
       setLiveTranscriptionFailed(false)
+      const _toIdle = () => _transitionTo('idle')
       api.finalizeRecording(
         sessionId,
         { durationSec, skipTranscribe: true },
-        {
-          complete: () => {
-            _resetState()
-            setRecordingState('idle')
-          },
-          error: () => {
-            _resetState()
-            setRecordingState('idle')
-          },
-          transportError: () => {
-            _resetState()
-            setRecordingState('idle')
-          },
-        },
+        { complete: _toIdle, error: _toIdle, transportError: _toIdle },
       )
       return
     }
 
-    // Normal finalize path: show transcribing screen, then done
+    // Normal finalize path: show transcribing screen, then done.
+    //
+    // The disposer returned by api.finalizeRecording is intentionally NOT
+    // captured. The server treats finalize as detached from the client's
+    // connection lifetime — the .md file is written even if the user closes
+    // the tab mid-transcribe (see app/server.py finalize producer, which only
+    // logs disconnects). Aborting the in-flight POST here would cancel that
+    // work, so we let the request run to completion in the background.
     setRecordingState('transcribing')
     api.finalizeRecording(
       sessionId,
       { durationSec },
       {
         complete: (evt) => {
-          const nid = evt.payload?.noteId ?? noteIdRef.current
-          if (nid) {
-            noteIdRef.current = nid
-            setNoteId(nid)
-          }
-          _resetState()
-          setRecordingState('done')
+          _captureNoteId(evt)
+          _transitionTo('done')
         },
         error: (evt) => {
           // Partial .md may exist — show done screen with error modal
-          const nid = evt.payload?.noteId ?? noteIdRef.current
-          if (nid) {
-            noteIdRef.current = nid
-            setNoteId(nid)
-          }
+          _captureNoteId(evt)
           openErrorModal('finalize_partial')
-          _resetState()
-          setRecordingState('done')
+          _transitionTo('done')
         },
         transportError: () => {
           openErrorModal('transport_error')
-          _resetState()
-          setRecordingState('idle')
+          _transitionTo('idle')
         },
       },
     )

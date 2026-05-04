@@ -136,9 +136,6 @@ class SessionTranscribeQueue:
         self._pending_chunks: list[_PendingChunk] = []
         self._accumulated_duration_ms: int = 0
 
-        # Batch sequence counter (incremented per dispatched batch).
-        self._batch_seq: int = 0
-
         # One-way latch: set to True when the live worker exhausts all network
         # retries.  Subsequent push() calls are silently discarded.  drain()
         # ignores this flag so finalize can still flush any buffered chunks.
@@ -235,7 +232,6 @@ class SessionTranscribeQueue:
         MUST be called with self._state_lock held.  Does not enqueue; caller is
         responsible for await self._queue.put(batch) after releasing the lock.
         """
-        self._batch_seq += 1
         batch = _BatchJob(chunks=list(self._pending_chunks))
         self._pending_chunks.clear()
         self._accumulated_duration_ms = 0
@@ -266,6 +262,19 @@ class SessionTranscribeQueue:
             finally:
                 self._queue.task_done()
 
+    @staticmethod
+    def _safe_bulk_update_status(conn, chunk_ids: list[int], status: str) -> None:
+        """bulk_update_status that swallows exceptions (best-effort).
+
+        Used to keep VAD-chunk row statuses in sync with batch status.  A
+        failure here must not abort the batch — the batch row itself is the
+        authoritative status carrier.
+        """
+        try:
+            recording_chunks.bulk_update_status(conn, chunk_ids, status)
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _process_batch(self, batch: _BatchJob) -> None:
         """Concatenate WAVs, call groq, handle retries and errors."""
         chunk_ids = [c.chunk_id for c in batch.chunks]
@@ -288,10 +297,7 @@ class SessionTranscribeQueue:
                     batch.end_ms,
                 )
                 recording_chunks.update_chunk_status(conn, batch_chunk_id, "transcribing")
-                try:
-                    recording_chunks.bulk_update_status(conn, chunk_ids, "transcribing")
-                except Exception:  # noqa: BLE001
-                    pass
+                self._safe_bulk_update_status(conn, chunk_ids, "transcribing")
 
             # 3. Concatenate WAV files into a temp file.
             try:
@@ -343,65 +349,42 @@ class SessionTranscribeQueue:
                     if attempt < max_retries:
                         await asyncio.sleep(retry_sleep_sec)
                     else:
-                        # All retries exhausted — notify frontend via SSE and
-                        # latch the session so no further pushes are accepted.
+                        # All retries exhausted — latch the session so no
+                        # further pushes are accepted, then fail via the shared
+                        # path (SSE notify + cleanup + DB mark).
                         logger.error(
                             "Batch seq=%d failed after %d retries (network) session=%s",
-                            batch.seq,
-                            max_retries,
-                            self._session_id,
+                            batch.seq, max_retries, self._session_id,
                         )
                         self._live_failed = True
-                        await self._push_groq_error_event(
-                            "network_failed_max_retries",
-                            {"batch_seq": batch.seq, "session_id": self._session_id},
-                        )
-                        _cleanup(batch_wav)
-                        batch_wav = None
-                        await self._mark_batch_failed(
-                            batch,
-                            batch_chunk_id=batch_chunk_id,
+                        await self._fail_batch(
+                            batch, batch_wav, batch_chunk_id,
                             error_type="network_failed_max_retries",
+                            details={"batch_seq": batch.seq, "session_id": self._session_id},
                         )
                         return
 
                 except GroqRateLimitError as exc:
                     logger.warning(
                         "GroqRateLimitError batch seq=%d session=%s: %s",
-                        batch.seq,
-                        self._session_id,
-                        exc,
+                        batch.seq, self._session_id, exc,
                     )
-                    await self._push_groq_error_event(
-                        "rate_limit",
-                        {"batch_seq": batch.seq},
-                    )
-                    _cleanup(batch_wav)
-                    batch_wav = None
-                    await self._mark_batch_failed(
-                        batch,
-                        batch_chunk_id=batch_chunk_id,
+                    await self._fail_batch(
+                        batch, batch_wav, batch_chunk_id,
                         error_type="rate_limit",
+                        details={"batch_seq": batch.seq},
                     )
                     return
 
                 except GroqServerError as exc:
                     logger.error(
                         "GroqServerError batch seq=%d session=%s: %s",
-                        batch.seq,
-                        self._session_id,
-                        exc,
+                        batch.seq, self._session_id, exc,
                     )
-                    await self._push_groq_error_event(
-                        "server_error",
-                        {"batch_seq": batch.seq, "detail": str(exc)},
-                    )
-                    _cleanup(batch_wav)
-                    batch_wav = None
-                    await self._mark_batch_failed(
-                        batch,
-                        batch_chunk_id=batch_chunk_id,
+                    await self._fail_batch(
+                        batch, batch_wav, batch_chunk_id,
                         error_type="server_error",
+                        details={"batch_seq": batch.seq, "detail": str(exc)},
                     )
                     return
 
@@ -413,21 +396,12 @@ class SessionTranscribeQueue:
                     )
                     logger.error(
                         "%s batch seq=%d session=%s: %s",
-                        type(exc).__name__,
-                        batch.seq,
-                        self._session_id,
-                        exc,
+                        type(exc).__name__, batch.seq, self._session_id, exc,
                     )
-                    await self._push_groq_error_event(
-                        error_type,
-                        {"batch_seq": batch.seq, "detail": str(exc)},
-                    )
-                    _cleanup(batch_wav)
-                    batch_wav = None
-                    await self._mark_batch_failed(
-                        batch,
-                        batch_chunk_id=batch_chunk_id,
+                    await self._fail_batch(
+                        batch, batch_wav, batch_chunk_id,
                         error_type=error_type,
+                        details={"batch_seq": batch.seq, "detail": str(exc)},
                     )
                     return
 
@@ -449,10 +423,7 @@ class SessionTranscribeQueue:
 
             with closing(db.open_db()) as conn:
                 recording_chunks.update_chunk_status(conn, batch_chunk_id, "success", text)
-                try:
-                    recording_chunks.bulk_update_status(conn, chunk_ids, "success")
-                except Exception:  # noqa: BLE001
-                    pass
+                self._safe_bulk_update_status(conn, chunk_ids, "success")
 
             # Clean up batch temp WAV.
             _cleanup(batch_wav)
@@ -534,6 +505,25 @@ class SessionTranscribeQueue:
                 error_type,
             )
 
+    async def _fail_batch(
+        self,
+        batch: _BatchJob,
+        batch_wav: Path | None,
+        batch_chunk_id: int | None,
+        *,
+        error_type: str,
+        details: dict,
+    ) -> None:
+        """Common non-retriable-error path: SSE notify → cleanup temp WAV →
+        mark batch as failed in DB.  Mutates nothing the caller still uses
+        (caller must drop its local batch_wav reference after calling).
+        """
+        await self._push_groq_error_event(error_type, details)
+        _cleanup(batch_wav)
+        await self._mark_batch_failed(
+            batch, batch_chunk_id=batch_chunk_id, error_type=error_type,
+        )
+
     async def _mark_batch_failed(
         self,
         batch: _BatchJob,
@@ -546,12 +536,9 @@ class SessionTranscribeQueue:
             try:
                 with closing(db.open_db()) as conn:
                     recording_chunks.update_chunk_status(conn, batch_chunk_id, "failed")
-                    try:
-                        recording_chunks.bulk_update_status(
-                            conn, [c.chunk_id for c in batch.chunks], "failed"
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
+                    self._safe_bulk_update_status(
+                        conn, [c.chunk_id for c in batch.chunks], "failed"
+                    )
             except Exception:
                 logger.exception(
                     "Could not mark batch chunk %d as failed", batch_chunk_id

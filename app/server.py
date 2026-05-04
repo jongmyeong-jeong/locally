@@ -134,9 +134,7 @@ async def _push_chunk_transcribed(
             sidecar_payload = json.dumps(
                 {"seq": seq, "segments": segments}, ensure_ascii=False
             )
-            tmp = sidecar.with_suffix(".tmp")
-            await asyncio.to_thread(tmp.write_text, sidecar_payload, "utf-8")
-            await asyncio.to_thread(os.replace, tmp, sidecar)
+            await asyncio.to_thread(_atomic_write_text, sidecar, sidecar_payload)
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "segments_sidecar_write_error",
@@ -244,6 +242,17 @@ async def _write_upload_file(
     )
 
 
+def _atomic_write_text(destination: Path, payload: str) -> None:
+    """Write `payload` to `destination` atomically via a sibling .tmp file.
+
+    Combines write + rename into a single sync call so the async caller pays
+    for one thread switch instead of two.
+    """
+    tmp = destination.with_suffix(".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    os.replace(tmp, destination)
+
+
 def _copy_fileobj_to_path(source, destination: Path, *, chunk_size: int = 1024 * 1024) -> int:
     destination.parent.mkdir(parents=True, exist_ok=True)
     written = 0
@@ -254,6 +263,47 @@ def _copy_fileobj_to_path(source, destination: Path, *, chunk_size: int = 1024 *
                 return written
             output.write(chunk)
             written += len(chunk)
+
+
+def _materialize_vad_jobs(
+    session_id: str,
+    note_id: str,
+    first_seq: int,
+    boundaries: list,
+) -> list:
+    """Sync helper: insert chunk rows + write per-boundary VAD WAV files.
+
+    Returns the list of ChunkJob specs ready for async enqueue.  All blocking
+    work (sqlite writes, numpy clip/cast, scipy WAV write) runs in a worker
+    thread via asyncio.to_thread so the FastAPI handler does not block the
+    event loop.
+    """
+    jobs: list[transcribe_queue.ChunkJob] = []
+    tmp_root = Path(tempfile.gettempdir())
+    with db_mod.open_db() as conn:
+        for offset, (start_ms, end_ms, pcm_slice) in enumerate(boundaries):
+            chunk_seq = first_seq + offset
+            chunk_id = recording_chunks.insert_chunk(
+                conn, note_id, chunk_seq, start_ms, end_ms
+            )
+            wav_filename = tmp_root / f"{session_id}_vad_{chunk_seq}.wav"
+            pcm_int16 = np.clip(pcm_slice * 32767, -32768, 32767).astype(np.int16)
+            scipy.io.wavfile.write(str(wav_filename), 16000, pcm_int16)
+            logger.debug(
+                "vad_emit session=%s seq=%d boundary=(%dms, %dms) wav=%s",
+                session_id, chunk_seq, start_ms, end_ms, wav_filename.name,
+            )
+            jobs.append(
+                transcribe_queue.ChunkJob(
+                    chunk_id=chunk_id,
+                    note_id=note_id,
+                    seq=chunk_seq,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    audio_path=str(wav_filename),
+                )
+            )
+    return jobs
 
 
 def _append_recording_chunk_sync(
@@ -743,41 +793,17 @@ def create_app() -> FastAPI:
 
                     if boundaries and note_id:
                         sq = await transcribe_queue.get_session_queue(session_id)
-                        with db_mod.open_db() as conn:
-                            for offset, (start_ms, end_ms, pcm_slice) in enumerate(boundaries):
-                                chunk_seq = first_seq + offset
-                                chunk_id = recording_chunks.insert_chunk(
-                                    conn, note_id, chunk_seq, start_ms, end_ms
-                                )
-                                # Write VAD PCM slice to a per-boundary WAV temp file.
-                                # This replaces the approximate webm-box audio path so that
-                                # boundaries spanning multiple browser chunks are captured fully.
-                                wav_filename = (
-                                    Path(tempfile.gettempdir())
-                                    / f"{session_id}_vad_{chunk_seq}.wav"
-                                )
-                                pcm_int16 = np.clip(
-                                    pcm_slice * 32767, -32768, 32767
-                                ).astype(np.int16)
-                                scipy.io.wavfile.write(str(wav_filename), 16000, pcm_int16)
-                                logger.debug(
-                                    "vad_emit session=%s seq=%d boundary=(%dms, %dms) wav=%s",
-                                    session_id,
-                                    chunk_seq,
-                                    start_ms,
-                                    end_ms,
-                                    wav_filename.name,
-                                )
-                                job = transcribe_queue.ChunkJob(
-                                    chunk_id=chunk_id,
-                                    note_id=note_id,
-                                    seq=chunk_seq,
-                                    start_ms=start_ms,
-                                    end_ms=end_ms,
-                                    audio_path=str(wav_filename),
-                                )
-                                if sq is not None:
-                                    await sq.push(job)
+                        # Offload sync DB inserts + per-boundary WAV writes to
+                        # a worker thread so the request handler stops blocking
+                        # on disk I/O.  ChunkJob enqueue stays in the event
+                        # loop because sq.push is async.
+                        jobs = await asyncio.to_thread(
+                            _materialize_vad_jobs,
+                            session_id, note_id, first_seq, boundaries,
+                        )
+                        if sq is not None:
+                            for job in jobs:
+                                await sq.push(job)
 
             return result
         finally:
