@@ -1,18 +1,22 @@
-import './RecIndicator.css';
+import './RecIndicator.css'
 
 export default function RecIndicator({ pulsing = true }) {
   return (
-    <div className="rec-indicator">
-      <div className="rec-indicator__dot-wrapper">
-        <div
+    <div className="rec-chip">
+      <div className="rec-chip__dot-wrapper">
+        {pulsing && (
+          <>
+            <span className="rec-chip__ripple rec-chip__ripple--1" />
+            <span className="rec-chip__ripple rec-chip__ripple--2" />
+          </>
+        )}
+        <span
           className={
-            'rec-indicator__halo' +
-            (pulsing ? ' rec-indicator__halo--pulsing' : '')
+            'rec-chip__dot' + (pulsing ? ' rec-chip__dot--pulsing' : '')
           }
         />
-        <div className="rec-indicator__dot" />
       </div>
-      <span className="rec-indicator__label">REC</span>
+      <span className="rec-chip__label">REC</span>
     </div>
-  );
+  )
 }

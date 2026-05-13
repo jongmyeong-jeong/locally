@@ -1,17 +1,16 @@
 .audio-level-meter {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   align-items: center;
   justify-content: center;
-  width: 126px;
-  height: 50px;
-  opacity: 0.7;
+  height: 48px;
+  padding: 0 44px;
 }
 
 .audio-level-meter__bar {
   width: 6px;
-  background-color: #9f9fa9;
+  background-color: #ff4b3a;
   border-radius: 9999px;
   flex-shrink: 0;
-  transition: height 0.05s linear;
+  transition: height 80ms ease-out;
 }

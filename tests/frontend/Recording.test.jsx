@@ -400,7 +400,7 @@ describe('Recording — transcribing/done screens', () => {
       expect(screen.getByText('전사가 완료됐어요')).toBeInTheDocument()
     })
     expect(screen.getByText('파일이 자동으로 저장되었습니다')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '↓ 파일로 내려받기' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '파일로 내려받기' })).toBeInTheDocument()
   })
 
   // T3: SSE error → done screen + ErrorModal
@@ -566,7 +566,7 @@ describe('Recording — transcribing/done screens', () => {
       expect(screen.getByText('전사가 완료됐어요')).toBeInTheDocument()
     })
 
-    fireEvent.click(screen.getByRole('button', { name: '← 시작 화면으로' }))
+    fireEvent.click(screen.getByRole('button', { name: '시작 화면으로' }))
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '녹음 시작' })).toBeInTheDocument()

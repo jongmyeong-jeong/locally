@@ -1,16 +1,25 @@
-import { Suspense, lazy, useEffect, useState } from 'react'
+import { Suspense, lazy, useState } from 'react'
 import { Route, Routes } from 'react-router-dom'
 import useSystemInfo from '@/hooks/useSystemInfo'
 import ErrorModal from '@/components/ErrorModal'
 
 const Recording = lazy(() => import('@/pages/Recording'))
 
-function RouteLoading() {
-  return (
-    <section style={{ padding: '24px', fontSize: '14px', color: '#4d4d4d' }}>
-      화면을 불러오는 중...
-    </section>
-  )
+const LOADING_STYLE = {
+  minHeight: '100vh',
+  width: '100%',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  background: '#09090b',
+  color: '#71717a',
+  fontFamily: 'Inter, sans-serif',
+  fontSize: '14px',
+  letterSpacing: '-0.01em',
+}
+
+function FullScreenLoading({ label }) {
+  return <section style={LOADING_STYLE}>{label}</section>
 }
 
 // Shows a one-time modal when GROQ_API_KEY is not configured.
@@ -20,15 +29,11 @@ function GroqKeyGate({ children }) {
   const { data: sysInfo, isLoading } = useSystemInfo()
   const [dismissed, setDismissed] = useState(false)
 
-  const keyMissing = !isLoading && sysInfo && sysInfo.groqConfigured === false
-
   if (isLoading) {
-    return (
-      <section style={{ padding: '24px', fontSize: '14px', color: '#4d4d4d' }}>
-        불러오는 중...
-      </section>
-    )
+    return <FullScreenLoading label="불러오는 중..." />
   }
+
+  const keyMissing = sysInfo && sysInfo.groqConfigured === false
 
   return (
     <>
@@ -45,7 +50,7 @@ function GroqKeyGate({ children }) {
 export default function App() {
   return (
     <GroqKeyGate>
-      <Suspense fallback={<RouteLoading />}>
+      <Suspense fallback={<FullScreenLoading label="화면을 불러오는 중..." />}>
         <Routes>
           <Route path="/" element={<Recording />} />
           <Route path="*" element={<Recording />} />

@@ -1,50 +1,72 @@
 import { useEffect, useRef, useState } from 'react'
 import './AudioLevelMeter.css'
 
-const FALLBACK_HEIGHTS = [16, 24, 42, 12, 20, 32, 20, 24, 36, 24, 26]
-const NUM_BARS = 11
+const NUM_BARS = 30
 const ALPHA = 0.4
-const SILENCE_THRESHOLD = 5
+// Silence cutoffs — calibrated for typical mic noise floors.
+// If the mean across all bars is below GLOBAL_SILENCE, every bar collapses
+// to the flat resting height (a uniform row of dots). Otherwise each bar
+// that falls below PER_BAR_FLOOR also rests at FLAT_HEIGHT.
+const GLOBAL_SILENCE = 4
+const PER_BAR_FLOOR = 14
+const MAX_BAR_HEIGHT = 48
+const FLAT_HEIGHT = 6 // resting height — matches bar width so each bar is a circle
+
+// Stable per-bar opacity (Figma node 492:160) — gives visual variety
+// without re-randomising every render.
+const BAR_OPACITIES = [
+  0.78, 0.72, 0.79, 0.6, 0.92, 0.65, 0.98, 0.6, 0.75, 0.63,
+  0.85, 0.6, 0.64, 0.61, 0.69, 0.87, 0.74, 0.73, 0.72, 0.77,
+  0.97, 0.9, 0.67, 0.61, 0.64, 0.65, 0.61, 0.68, 0.67, 0.86,
+]
+
+const FLAT_HEIGHTS = new Array(NUM_BARS).fill(FLAT_HEIGHT)
 
 /**
  * AudioLevelMeter
  *
- * Renders 11 vertical bars driven by Web Audio AnalyserNode FFT data.
- * When audioStream is absent or silent, falls back to static Figma heights.
+ * 30 vermilion bars driven by Web Audio AnalyserNode FFT data.
+ * Each bar collapses to 0 height when its band is below the silence
+ * floor, so quiet rooms render as completely empty (no stray tall bars).
  *
  * Props:
  *   audioStream?: MediaStream | null
  */
 export default function AudioLevelMeter({ audioStream }) {
-  const [barHeights, setBarHeights] = useState(FALLBACK_HEIGHTS)
+  const [barHeights, setBarHeights] = useState(FLAT_HEIGHTS)
   const rafRef = useRef(null)
-  const smoothedRef = useRef(new Array(NUM_BARS).fill(0))
 
   useEffect(() => {
     if (!audioStream) {
-      setBarHeights(FALLBACK_HEIGHTS)
+      setBarHeights(FLAT_HEIGHTS)
       return undefined
     }
 
     const AudioCtx = window.AudioContext || window.webkitAudioContext
     if (!AudioCtx) {
-      setBarHeights(FALLBACK_HEIGHTS)
+      setBarHeights(FLAT_HEIGHTS)
       return undefined
     }
 
     const audioContext = new AudioCtx()
-    const source = audioContext.createMediaStreamSource(audioStream)
-    const analyser = audioContext.createAnalyser()
-    analyser.fftSize = 256
-    // Connect only to analyser — not to destination — to avoid mic feedback
-    source.connect(analyser)
+    let source
+    let analyser
+    try {
+      source = audioContext.createMediaStreamSource(audioStream)
+      analyser = audioContext.createAnalyser()
+      analyser.fftSize = 256
+      source.connect(analyser)
+    } catch (err) {
+      console.warn('AudioLevelMeter: cannot attach stream', err)
+      setBarHeights(FLAT_HEIGHTS)
+      audioContext.close().catch(() => {})
+      return undefined
+    }
 
-    const binCount = analyser.frequencyBinCount // 128
+    const binCount = analyser.frequencyBinCount
     const buffer = new Uint8Array(binCount)
     const smoothed = new Array(NUM_BARS).fill(0)
-    smoothedRef.current = smoothed
 
-    // Pre-compute segment boundaries for 11 bands across 128 bins
     const segments = []
     for (let i = 0; i < NUM_BARS; i++) {
       const start = Math.floor((i * binCount) / NUM_BARS)
@@ -56,25 +78,25 @@ export default function AudioLevelMeter({ audioStream }) {
       rafRef.current = requestAnimationFrame(tick)
       analyser.getByteFrequencyData(buffer)
 
-      // Downsample: mean of each band segment
       for (let i = 0; i < NUM_BARS; i++) {
         const { start, end } = segments[i]
         let sum = 0
         for (let j = start; j < end; j++) sum += buffer[j]
         const raw = sum / (end - start)
-        // EMA smoothing
         smoothed[i] = ALPHA * raw + (1 - ALPHA) * smoothed[i]
       }
 
-      // Silence detection: mean of all smoothed values
-      const mean = smoothed.reduce((a, b) => a + b, 0) / NUM_BARS
-      if (mean < SILENCE_THRESHOLD) {
-        setBarHeights(FALLBACK_HEIGHTS)
+      const mean = smoothed.reduce((acc, n) => acc + n, 0) / NUM_BARS
+      if (mean < GLOBAL_SILENCE) {
+        setBarHeights(FLAT_HEIGHTS)
         return
       }
 
-      // Map 0-255 → 4-50px
-      setBarHeights(smoothed.map(v => 4 + (v / 255) * 46))
+      const heights = smoothed.map((v) => {
+        if (v < PER_BAR_FLOOR) return FLAT_HEIGHT
+        return FLAT_HEIGHT + (v / 255) * (MAX_BAR_HEIGHT - FLAT_HEIGHT)
+      })
+      setBarHeights(heights)
     }
 
     rafRef.current = requestAnimationFrame(tick)
@@ -97,7 +119,7 @@ export default function AudioLevelMeter({ audioStream }) {
         <div
           key={i}
           className="audio-level-meter__bar"
-          style={{ height: `${h}px` }}
+          style={{ height: `${h}px`, opacity: BAR_OPACITIES[i] }}
         />
       ))}
     </div>

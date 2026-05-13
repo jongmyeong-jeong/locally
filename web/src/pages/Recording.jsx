@@ -7,181 +7,60 @@ import FlipCardTimer from '@/components/FlipCardTimer'
 import RecIndicator from '@/components/RecIndicator'
 import AudioLevelMeter from '@/components/AudioLevelMeter'
 import ErrorModal from '@/components/ErrorModal'
+import IdleScreen from '@/components/IdleScreen'
+import StopButton from '@/components/StopButton'
+import TranscribingView from '@/components/TranscribingView'
+import DoneView from '@/components/DoneView'
 
 // Plan §4.2 + AC-7. Chunk cadence is 10s; MediaRecorder mimeType is fixed.
 const CHUNK_MS = 10000
 const MIME_TYPE = 'audio/webm;codecs=opus'
 
-// Inline SVG icons — avoids external icon dependency
-function MicIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <rect x="5" y="1" width="6" height="9" rx="3" fill="currentColor" />
-      <path d="M2.5 8C2.5 11.0376 5.13401 13.5 8 13.5C10.866 13.5 13.5 11.0376 13.5 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <line x1="8" y1="13.5" x2="8" y2="15" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-    </svg>
-  )
-}
-
-function StopIcon() {
-  return (
-    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <rect x="3" y="3" width="10" height="10" rx="2" fill="currentColor" />
-    </svg>
-  )
-}
-
-// Inject CSS keyframe for spinner animation (idempotent — only injected once)
-if (typeof document !== 'undefined' && !document.getElementById('bada-spin-keyframe')) {
-  const style = document.createElement('style')
-  style.id = 'bada-spin-keyframe'
-  style.textContent = '@keyframes bada-spin { to { transform: rotate(360deg); } }'
-  document.head.appendChild(style)
-}
-
-// Page background and layout styles (raw hex/px — no CSS vars per spec)
-const PAGE_STYLE = {
+const DARK_PAGE_STYLE = {
   minHeight: '100vh',
-  background: '#f8f9fa',
+  background: '#09090b',
+  color: '#fafafa',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
 }
 
-const CONTAINER_BASE = {
+const RECORDING_LAYOUT = {
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'center',
+  gap: '64px',
 }
 
-const IDLE_CONTAINER = {
-  ...CONTAINER_BASE,
-  gap: '80px',
-}
-
-const RECORDING_CONTAINER = {
-  ...CONTAINER_BASE,
+const RECORDING_HEADER = {
+  display: 'flex',
+  flexDirection: 'column',
+  alignItems: 'center',
   gap: '40px',
 }
 
-const INNER_SECTION = {
+const RECORDING_MIDDLE = {
   display: 'flex',
   flexDirection: 'column',
   alignItems: 'center',
-  gap: '24px',
+  gap: '48px',
 }
 
-const BTN_START = {
-  background: '#dc2626',
-  height: '48px',
-  padding: '0 18px',
-  borderRadius: '6px',
-  gap: '8px',
-  color: '#ffffff',
-  fontFamily: 'Inter, sans-serif',
-  fontWeight: 600,
-  fontSize: '16px',
-  letterSpacing: '-0.16px',
-  cursor: 'pointer',
-  border: 'none',
-  display: 'flex',
-  alignItems: 'center',
-}
-
-const BTN_STOP = {
-  ...BTN_START,
-  background: '#dc2626',
-}
-
-const BTN_DOWNLOAD = {
-  height: '48px',
-  padding: '0 18px',
-  borderRadius: '6px',
-  color: '#171717',
-  fontFamily: 'Inter, sans-serif',
-  fontWeight: 600,
-  fontSize: '16px',
-  letterSpacing: '-0.16px',
-  cursor: 'pointer',
-  border: '1.5px solid #e4e4e7',
-  background: '#f4f4f5',
-  display: 'flex',
-  alignItems: 'center',
-  gap: '8px',
-}
-
-function CheckIcon({ color }) {
-  return (
-    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <path d="M5 13l4 4L19 7" stroke={color} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-function TranscribingView() {
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '24px' }}>
-      <div style={{
-        width: 40, height: 40, borderRadius: '50%',
-        border: '3px solid #fecaca', borderTopColor: '#dc2626',
-        animation: 'bada-spin 1s linear infinite',
-      }} />
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
-        <span style={{ fontFamily: 'Inter, sans-serif', fontWeight: 600, fontSize: '18px', color: '#171717' }}>
-          전사하는 중이에요
-        </span>
-        <span style={{ fontFamily: 'Inter, sans-serif', fontWeight: 400, fontSize: '14px', color: '#71717a' }}>
-          잠시만 기다려 주세요
-        </span>
-      </div>
-    </div>
-  )
-}
-
-function DoneView({ noteId, onDownload, onGoHome }) {
-  const canDownload = noteId !== null
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '24px' }}>
-      <div style={{
-        width: 64, height: 64, borderRadius: '50%',
-        background: '#dcfce7', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      }}>
-        <CheckIcon color="#16a34a" />
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
-        <span style={{ fontFamily: 'Inter, sans-serif', fontWeight: 600, fontSize: '18px', color: '#171717' }}>
-          전사가 완료됐어요
-        </span>
-        <span style={{ fontFamily: 'Inter, sans-serif', fontWeight: 400, fontSize: '14px', color: '#71717a' }}>
-          파일이 자동으로 저장되었습니다
-        </span>
-      </div>
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
-        <button
-          style={{
-            ...BTN_DOWNLOAD,
-            ...(canDownload ? {} : { opacity: 0.4, cursor: 'not-allowed' }),
-          }}
-          onClick={canDownload ? onDownload : undefined}
-          disabled={!canDownload}
-          type="button"
-        >
-          ↓ 파일로 내려받기
-        </button>
-        <button
-          style={{
-            background: 'none', border: 'none', color: '#71717a',
-            fontSize: '14px', cursor: 'pointer', fontFamily: 'Inter, sans-serif',
-            textDecoration: 'underline',
-          }}
-          onClick={onGoHome}
-          type="button"
-        >
-          ← 시작 화면으로
-        </button>
-      </div>
-    </div>
-  )
+function classifyMicError(err) {
+  const name = err?.name ?? ''
+  if (!navigator.mediaDevices) {
+    return { errorType: 'mic_https_required' }
+  }
+  if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+    return { errorType: 'mic_not_found' }
+  }
+  if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+    return { errorType: 'mic_denied' }
+  }
+  return {
+    errorType: 'mic_error',
+    description: `${name || 'Unknown'}: ${err?.message ?? ''}`.trim(),
+  }
 }
 
 export default function Recording() {
@@ -196,8 +75,8 @@ export default function Recording() {
   const [stream, setStream] = useState(null)
   const [noteId, setNoteId] = useState(null)
 
-  // Error modal state
-  const [errorModal, setErrorModal] = useState({ open: false, errorType: null })
+  // Error modal state — description is an optional body override
+  const [errorModal, setErrorModal] = useState({ open: false, errorType: null, description: null })
 
   // Refs for async callbacks / lifecycle
   const mediaRecorderRef = useRef(null)
@@ -254,12 +133,12 @@ export default function Recording() {
     }
   }, [])
 
-  const openErrorModal = useCallback((errorType) => {
-    setErrorModal({ open: true, errorType })
+  const openErrorModal = useCallback((errorType, description = null) => {
+    setErrorModal({ open: true, errorType, description })
   }, [])
 
   const closeErrorModal = useCallback(() => {
-    setErrorModal({ open: false, errorType: null })
+    setErrorModal({ open: false, errorType: null, description: null })
   }, [])
 
   const handleStart = useCallback(async () => {
@@ -277,18 +156,8 @@ export default function Recording() {
     try {
       micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
     } catch (err) {
-      const name = err?.name ?? ''
-      let description = '마이크 권한이 거부되었습니다'
-      if (!navigator.mediaDevices) {
-        description = 'HTTPS 또는 localhost 환경에서만 마이크를 사용할 수 있습니다'
-      } else if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
-        description = '마이크 장치를 찾을 수 없습니다'
-      } else if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
-        description = '마이크 권한이 거부되었습니다. 브라우저 주소창에서 허용하세요'
-      } else {
-        description = `마이크 오류 (${name || 'Unknown'}): ${err?.message}`
-      }
-      alert(description)
+      const { errorType, description } = classifyMicError(err)
+      openErrorModal(errorType, description)
       return
     }
 
@@ -298,11 +167,10 @@ export default function Recording() {
       session = await api.createRecording({})
     } catch (err) {
       micStream.getTracks().forEach((t) => t.stop())
-      // Check if server returned groq_api_key_missing
       if (err?.status === 503 && err?.body?.error === 'groq_api_key_missing') {
         openErrorModal('api_key_missing')
       } else {
-        alert(`녹음 세션 생성 실패: ${err?.message ?? ''}`)
+        openErrorModal('session_create_failed', err?.message ?? null)
       }
       return
     }
@@ -313,7 +181,7 @@ export default function Recording() {
       mr = new MediaRecorder(micStream, { mimeType: MIME_TYPE })
     } catch (err) {
       micStream.getTracks().forEach((t) => t.stop())
-      alert('이 브라우저는 webm/opus 녹음을 지원하지 않습니다')
+      openErrorModal('browser_unsupported_recorder')
       return
     }
 
@@ -352,17 +220,15 @@ export default function Recording() {
     mr.start(CHUNK_MS)
 
     // SSE: subscribe to transcript stream to listen for groq_error events.
-    // We do NOT render live transcript text (RealtimeTranscript unmounted per spec C-UI).
     esRef.current = transcriptStream(session.id, {
       onGroqError: (data) => {
-        const errorType = data?.errorType  // camelCase — F2 fix (was data?.error_type)
+        const errorType = data?.errorType
         if (errorType === 'network_failed_max_retries') {
           setLiveTranscriptionFailed(true)
           if (esRef.current) { esRef.current(); esRef.current = null }
           openErrorModal('network_failed_max_retries')
           return
         }
-        // Map other error types to modal
         const mapped =
           errorType === 'rate_limit' ? 'rate_limit'
           : errorType === 'server_error' ? 'server_error'
@@ -389,10 +255,8 @@ export default function Recording() {
     clearTimer()
     setElapsedMs(0)
 
-    // Close SSE stream (may already be null if liveTranscriptionFailed)
     if (esRef.current) { esRef.current(); esRef.current = null }
 
-    // Flush final MediaRecorder chunk
     const stopped = new Promise((resolve) => {
       const prev = mr.ondataavailable
       mr.ondataavailable = (ev) => { if (prev) prev(ev) }
@@ -410,7 +274,7 @@ export default function Recording() {
     const durationSec = (Date.now() - startedAt) / 1000
 
     if (durationSec < 1) {
-      alert('녹음 길이가 1초 미만입니다')
+      openErrorModal('recording_too_short')
       resetRecording()
       sessionIdRef.current = null
       startedAtRef.current = null
@@ -440,8 +304,6 @@ export default function Recording() {
     }
 
     // Live transcription failed branch: skip transcription, go straight to idle.
-    // All three SSE outcomes (complete/error/transportError) collapse to the
-    // same idle transition because no transcript is expected on this path.
     if (liveTranscriptionFailed) {
       setLiveTranscriptionFailed(false)
       const _toIdle = () => _transitionTo('idle')
@@ -471,7 +333,6 @@ export default function Recording() {
           _transitionTo('done')
         },
         error: (evt) => {
-          // Partial .md may exist — show done screen with error modal
           _captureNoteId(evt)
           openErrorModal('finalize_partial')
           _transitionTo('done')
@@ -526,64 +387,54 @@ export default function Recording() {
     }
   }, [clearTimer])
 
+  const handleGoHome = useCallback(() => {
+    setRecordingState('idle')
+    setNoteId(null)
+    setLiveTranscriptionFailed(false)
+  }, [])
+
   return (
-    <div style={PAGE_STYLE}>
-      {/* Idle state — Figma node 465:7092 */}
-      {recordingState === 'idle' && (
-        <div style={IDLE_CONTAINER}>
-          <FlipCardTimer elapsedMs={0} />
-          <button
-            style={BTN_START}
-            onClick={handleStart}
-            type="button"
-          >
-            <MicIcon />
-            녹음 시작
-          </button>
-        </div>
-      )}
+    <>
+      {recordingState === 'idle' && <IdleScreen onStart={handleStart} />}
 
-      {/* Recording state — Figma node 465:7219 / 60min+ 468:7315 */}
       {recordingState === 'recording' && (
-        <div style={RECORDING_CONTAINER}>
-          <div style={INNER_SECTION}>
-            <RecIndicator pulsing />
-            <FlipCardTimer elapsedMs={elapsedMs} />
+        <div style={DARK_PAGE_STYLE}>
+          <div style={RECORDING_LAYOUT}>
+            <div style={RECORDING_HEADER}>
+              <RecIndicator pulsing />
+              <FlipCardTimer elapsedMs={elapsedMs} />
+            </div>
+            <div style={RECORDING_MIDDLE}>
+              <AudioLevelMeter audioStream={stream} />
+              <StopButton onClick={handleStop} />
+            </div>
           </div>
-          <AudioLevelMeter audioStream={stream} />
-          <button
-            style={BTN_STOP}
-            onClick={handleStop}
-            type="button"
-          >
-            <StopIcon />
-            정지
-          </button>
         </div>
       )}
 
-      {/* Transcribing state */}
-      {recordingState === 'transcribing' && <TranscribingView />}
+      {recordingState === 'transcribing' && (
+        <div style={DARK_PAGE_STYLE}>
+          <TranscribingView />
+        </div>
+      )}
 
-      {/* Done state */}
       {recordingState === 'done' && (
-        <DoneView
-          noteId={noteId}
-          onDownload={handleDownload}
-          onGoHome={() => {
-            setRecordingState('idle')
-            setNoteId(null)
-            setLiveTranscriptionFailed(false)
-          }}
-        />
+        <div style={DARK_PAGE_STYLE}>
+          <DoneView
+            noteId={noteId}
+            onDownload={handleDownload}
+            onGoHome={handleGoHome}
+          />
+        </div>
       )}
 
       <ErrorModal
         open={errorModal.open}
         errorType={errorModal.errorType}
+        description={errorModal.description}
         onClose={closeErrorModal}
         onStopRecording={handleStopFromModal}
       />
-    </div>
+    </>
   )
 }
