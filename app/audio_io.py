@@ -8,6 +8,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 
@@ -79,5 +80,153 @@ def load_pcm_16k_mono(audio_path: str) -> "np.ndarray":
             f"ffmpeg failed (code {result.returncode}): {stderr_text}"
         )
 
+    pcm = np.frombuffer(result.stdout, dtype=np.float32)
+    return pcm
+
+
+# ---------------------------------------------------------------------------
+# Codec probe (cached at module level — runs once per process)
+# ---------------------------------------------------------------------------
+
+_PROBED_ENCODERS: Optional[frozenset[str]] = None
+
+
+def probe_audio_encoders() -> frozenset[str]:
+    """Return the set of available ffmpeg audio encoder names.
+
+    Runs ``ffmpeg -hide_banner -encoders`` once and caches the result for the
+    process lifetime.  Looks for 'libopus', 'flac', 'libmp3lame' specifically,
+    but returns all audio encoder names so callers can check any codec.
+    """
+    global _PROBED_ENCODERS
+    if _PROBED_ENCODERS is not None:
+        return _PROBED_ENCODERS
+
+    ffmpeg = _resolve_ffmpeg()
+    result = subprocess.run(
+        [ffmpeg, "-hide_banner", "-encoders"],
+        capture_output=True,
+        check=False,
+        timeout=30,
+    )
+    encoders: set[str] = set()
+    # Output format per line (audio section):  " A..... encoder_name  ..."
+    # A in position 1 indicates audio encoder.
+    for line in result.stdout.decode("utf-8", errors="replace").splitlines():
+        stripped = line.strip()
+        if len(stripped) < 8:
+            continue
+        # Columns: flags(6 chars) name description
+        # Flag column 0 = type: A=audio, V=video, S=subtitle
+        if stripped[0] == "A":
+            parts = stripped.split()
+            if len(parts) >= 2:
+                encoders.add(parts[1])
+
+    _PROBED_ENCODERS = frozenset(encoders)
+    return _PROBED_ENCODERS
+
+
+# ---------------------------------------------------------------------------
+# Re-encode for upload
+# ---------------------------------------------------------------------------
+
+def reencode_for_upload(src: Path, dest_dir: Path) -> Path:
+    """Re-encode *src* to 16 kHz mono for Groq upload; returns the output Path.
+
+    Codec selection (probed once at first call):
+      1. libopus  → output ``.ogg`` (24 kbps VBR)  — ~11 MB/h
+      2. flac     → output ``.flac``               — ~30–45 MB/h fallback
+
+    Raises
+    ------
+    AudioIOError
+        If neither libopus nor flac is available, or if ffmpeg exits non-zero.
+    """
+    ffmpeg = _resolve_ffmpeg()
+    encoders = probe_audio_encoders()
+
+    if "libopus" in encoders:
+        suffix = ".ogg"
+        codec_args = ["-c:a", "libopus", "-b:a", "24k", "-vbr", "on", "-f", "ogg"]
+    elif "flac" in encoders:
+        suffix = ".flac"
+        codec_args = ["-c:a", "flac", "-f", "flac"]
+    else:
+        raise AudioIOError(
+            "ffmpeg has neither libopus nor flac encoder available. "
+            "Cannot re-encode audio for upload."
+        )
+
+    dest = dest_dir / (src.stem + suffix)
+    cmd = [
+        ffmpeg,
+        "-nostdin",
+        "-v", "error",
+        "-i", str(src),
+        "-ar", "16000",
+        "-ac", "1",
+        "-map", "0:a",
+        *codec_args,
+        "-y",
+        str(dest),
+    ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        stderr_text = result.stderr.decode("utf-8", errors="replace")[-512:]
+        raise AudioIOError(
+            f"ffmpeg reencode failed (code {result.returncode}): {stderr_text}"
+        )
+    return dest
+
+
+# ---------------------------------------------------------------------------
+# Windowed PCM decode (for silence-boundary search)
+# ---------------------------------------------------------------------------
+
+def load_pcm_16k_mono_window(
+    audio_path: str,
+    *,
+    start_sec: float,
+    duration_sec: float,
+) -> "np.ndarray":
+    """Decode a time window of *audio_path* to 16 kHz mono float32 PCM.
+
+    Uses ``-ss {start_sec}`` BEFORE ``-i`` (fast seek) and ``-t {duration_sec}``
+    after to limit output length.  Follows the same subprocess pattern as
+    :func:`load_pcm_16k_mono`.
+
+    Returns a float32 1-D array (may be shorter than requested near EOF).
+    """
+    ffmpeg = _resolve_ffmpeg()
+    cmd = [
+        ffmpeg,
+        "-nostdin",
+        "-v", "error",
+        "-ss", str(start_sec),   # seek BEFORE -i for fast seek
+        "-i", audio_path,
+        "-t", str(duration_sec),
+        "-ac", "1",
+        "-ar", "16000",
+        "-f", "f32le",
+        "-acodec", "pcm_f32le",
+        "-",
+    ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        check=False,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        stderr_text = result.stderr.decode("utf-8", errors="replace")[-512:]
+        raise AudioIOError(
+            f"ffmpeg windowed decode failed (code {result.returncode}): {stderr_text}"
+        )
     pcm = np.frombuffer(result.stdout, dtype=np.float32)
     return pcm

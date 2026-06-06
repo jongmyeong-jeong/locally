@@ -16,6 +16,7 @@ SSE event wire format:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -26,9 +27,6 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator
-
-import numpy as np
-import scipy.io.wavfile
 
 from fastapi import (
     FastAPI,
@@ -47,15 +45,13 @@ from pydantic import BaseModel, ConfigDict, Field
 import platform
 
 from app import logger
-from app import audio_io
+from app import batch_transcribe
 from app import db as db_mod
 from app import paths
 from app import prompt as prompt_mod
 from app import recording_chunks
 from app import recordings as recordings_mod
 from app import server_jobs
-from app import transcribe_queue
-from app import vad_realtime
 
 # ---------------------------------------------------------------------------
 # File upload whitelist (plan §5 AC-5 "drag-drop whitelist").
@@ -79,35 +75,9 @@ _SYSTEM_INFO_CACHE: dict[str, float | dict | None] = {
 _SYSTEM_INFO_LOCK = threading.Lock()
 
 # ---------------------------------------------------------------------------
-# Per-session live-recording state (Step 6a/6b/6c)
+# Task registry — tracks in-flight finalize producers for graceful shutdown
 # ---------------------------------------------------------------------------
-# VAD detector instance, per session_id.
-_VAD_DETECTORS: dict[str, vad_realtime.ChunkBoundaryDetector] = {}
-# asyncio.Lock per session to serialize concurrent chunk VAD calls.
-_VAD_LOCKS: dict[str, asyncio.Lock] = {}
-# Boundary-chunk seq counter per session (for recording_chunks.insert_chunk).
-_CHUNK_SEQ: dict[str, int] = {}
-# Header-donor blob per session: (path to the seq-0 blob copy, its PCM sample
-# count). MediaRecorder timeslice blobs after the first carry no webm init
-# segment, so they can only be decoded with this header prepended.
-_VAD_HEADERS: dict[str, tuple[Path, int]] = {}
-
-# ---------------------------------------------------------------------------
-# Per-session SSE queues for transcript-stream channel
-# ---------------------------------------------------------------------------
-_TRANSCRIPT_SSE_QUEUES: dict[str, asyncio.Queue[bytes | None]] = {}
-
-
-def _register_transcript_queue(session_id: str) -> "asyncio.Queue[bytes | None]":
-    """Create and register a new SSE queue for the given session."""
-    q: asyncio.Queue[bytes | None] = asyncio.Queue()
-    _TRANSCRIPT_SSE_QUEUES[session_id] = q
-    return q
-
-
-def _remove_transcript_queue(session_id: str) -> None:
-    """Remove the SSE queue for the given session (idempotent)."""
-    _TRANSCRIPT_SSE_QUEUES.pop(session_id, None)
+_FINALIZE_TASKS: set[asyncio.Task] = set()
 
 
 def _sidecar_segments_path(note_id: str, seq: int) -> Path:
@@ -115,106 +85,10 @@ def _sidecar_segments_path(note_id: str, seq: int) -> Path:
     return paths.audio_dir() / f"segments-{note_id}-{seq:03d}.json"
 
 
-async def _push_chunk_transcribed(
-    session_id: str,
-    seq: int,
-    start_ms: int,
-    end_ms: int,
-    text: str,
-    *,
-    segments: list[dict] | None = None,
-    note_id: str | None = None,
-) -> None:
-    """Push a chunk_transcribed SSE event to the per-session queue, if registered.
-
-    Side-effect: if segments is not None, persist them as a sidecar JSON file
-    so the download endpoint can reconstruct fine-grained segment data later.
-    note_id comes from the queue (late-bound); the session lookup is a fallback
-    for batches transcribed before the binding — finalize-time batches can't use
-    the session because finalize() has already popped it.
-    """
-    # Persist segments sidecar keyed by note_id — the download endpoint globs
-    # segments-{note_id}-*.json, so a session_id-keyed file would never be found.
-    if segments is not None:
-        try:
-            sidecar_note_id = note_id
-            if not sidecar_note_id:
-                session = recordings_mod.get_session(session_id)
-                sidecar_note_id = (
-                    session.note_id
-                    if session is not None and session.note_id
-                    else session_id
-                )
-            sidecar = _sidecar_segments_path(sidecar_note_id, seq)
-            sidecar_payload = json.dumps(
-                {"seq": seq, "segments": segments}, ensure_ascii=False
-            )
-            await asyncio.to_thread(_atomic_write_text, sidecar, sidecar_payload)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "segments_sidecar_write_error",
-                {"session_id": session_id, "seq": seq, "error": str(exc)},
-            )
-
-    q = _TRANSCRIPT_SSE_QUEUES.get(session_id)
-    if q is None:
-        return
-    payload: dict = {
-        "seq": seq,
-        "startMs": start_ms,
-        "endMs": end_ms,
-        "text": text,
-    }
-    if segments is not None:
-        payload["segments"] = segments
-    await q.put(_sse_event("chunk_transcribed", payload))
-
-
-# Register the callbacks with transcribe_queue so it can push events without
-# creating a circular import.
-transcribe_queue.register_chunk_transcribed_callback(_push_chunk_transcribed)
-
-# SSE event name for groq errors (rate_limit, server_error, etc.)
-_GROQ_ERROR_SSE_FIELD = "groq_error"
-
-
-async def _push_groq_error(
-    session_id: str,
-    error_type: str,
-    details: dict,
-) -> None:
-    """Push a groq_error SSE event to the per-session queue, if registered.
-
-    error_type is one of: "rate_limit", "server_error", "api_key_missing",
-    "client_error", "concat_error", "unexpected_error",
-    "network_failed_max_retries".
-    """
-    q = _TRANSCRIPT_SSE_QUEUES.get(session_id)
-    if q is None:
-        return
-    await q.put(_sse_event(_GROQ_ERROR_SSE_FIELD, {
-        "errorType": error_type,
-        "details": details,
-    }))
-
-
-transcribe_queue.register_groq_error_callback(_push_groq_error)
-
-
 def _groq_api_key_set() -> bool:
     """Return True when GROQ_API_KEY is present in the environment."""
     import os
     return bool(os.environ.get("GROQ_API_KEY"))
-
-
-def _cleanup_session_live_state(session_id: str) -> None:
-    """Remove VAD detector, lock, chunk-seq counter, and header blob for session_id."""
-    _VAD_DETECTORS.pop(session_id, None)
-    _VAD_LOCKS.pop(session_id, None)
-    _CHUNK_SEQ.pop(session_id, None)
-    header = _VAD_HEADERS.pop(session_id, None)
-    if header is not None:
-        header[0].unlink(missing_ok=True)
 
 
 def _sse_event(name: str, payload: dict) -> bytes:
@@ -281,81 +155,6 @@ def _copy_fileobj_to_path(source, destination: Path, *, chunk_size: int = 1024 *
                 return written
             output.write(chunk)
             written += len(chunk)
-
-
-def _materialize_vad_jobs(
-    session_id: str,
-    note_id: str,
-    first_seq: int,
-    boundaries: list,
-) -> list:
-    """Sync helper: insert chunk rows + write per-boundary VAD WAV files.
-
-    Returns the list of ChunkJob specs ready for async enqueue.  All blocking
-    work (sqlite writes, numpy clip/cast, scipy WAV write) runs in a worker
-    thread via asyncio.to_thread so the FastAPI handler does not block the
-    event loop.
-    """
-    jobs: list[transcribe_queue.ChunkJob] = []
-    tmp_root = Path(tempfile.gettempdir())
-    with db_mod.open_db() as conn:
-        for offset, (start_ms, end_ms, pcm_slice) in enumerate(boundaries):
-            chunk_seq = first_seq + offset
-            chunk_id = recording_chunks.insert_chunk(
-                conn, note_id, chunk_seq, start_ms, end_ms
-            )
-            wav_filename = tmp_root / f"{session_id}_vad_{chunk_seq}.wav"
-            pcm_int16 = np.clip(pcm_slice * 32767, -32768, 32767).astype(np.int16)
-            scipy.io.wavfile.write(str(wav_filename), 16000, pcm_int16)
-            logger.debug(
-                "vad_emit session=%s seq=%d boundary=(%dms, %dms) wav=%s",
-                session_id, chunk_seq, start_ms, end_ms, wav_filename.name,
-            )
-            jobs.append(
-                transcribe_queue.ChunkJob(
-                    chunk_id=chunk_id,
-                    note_id=note_id,
-                    seq=chunk_seq,
-                    start_ms=start_ms,
-                    end_ms=end_ms,
-                    audio_path=str(wav_filename),
-                )
-            )
-    return jobs
-
-
-def _decode_chunk_pcm(session_id: str, seq: int, chunk_path: Path):
-    """Decode one uploaded MediaRecorder blob to 16 kHz mono PCM for VAD.
-
-    With MediaRecorder.start(timeslice), only the first blob carries the webm
-    initialization segment (EBML header + tracks); later blobs are bare
-    continuation clusters that ffmpeg rejects standalone ("EBML header parsing
-    failed").  Remedy: keep the header-bearing first blob per session, decode
-    ``header_blob + chunk`` concatenated — a byte-exact prefix of the original
-    stream — then slice off the header blob's samples (its PCM length is known
-    from the first decode).
-    """
-    header = _VAD_HEADERS.get(session_id)
-    if header is None:
-        # First decodable blob — decode standalone and become the header donor.
-        pcm = audio_io.load_pcm_16k_mono(str(chunk_path))
-        header_copy = (
-            Path(tempfile.gettempdir()) / f"{session_id}_webm_header.webm"
-        )
-        shutil.copyfile(chunk_path, header_copy)
-        _VAD_HEADERS[session_id] = (header_copy, int(pcm.size))
-        return pcm
-
-    header_path, header_samples = header
-    combo_path = Path(tempfile.gettempdir()) / f"{session_id}_combo_{seq}.webm"
-    try:
-        with combo_path.open("wb") as out:
-            out.write(header_path.read_bytes())
-            out.write(chunk_path.read_bytes())
-        full = audio_io.load_pcm_16k_mono(str(combo_path))
-    finally:
-        combo_path.unlink(missing_ok=True)
-    return full[header_samples:]
 
 
 def _append_recording_chunk_sync(
@@ -430,7 +229,6 @@ class RecordingStartJSON(BaseModel):
 class FinalizeRequest(BaseModel):
     title: str | None = None
     duration_sec: float | None = Field(default=None, alias="durationSec")
-    skip_transcribe: bool = Field(default=False, alias="skipTranscribe")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -441,7 +239,36 @@ class FinalizeRequest(BaseModel):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="lonta", version="0.1.0")
+    @contextlib.asynccontextmanager
+    async def lifespan(app: FastAPI):  # noqa: ARG001
+        # Startup: recover notes stuck in 'finalizing' (crashed mid-transcription).
+        with db_mod.open_db() as conn:
+            rows = conn.execute(
+                "SELECT id FROM notes WHERE status = 'finalizing'"
+            ).fetchall()
+            for row in rows:
+                nid = row["id"]
+                db_mod.update_note(conn, nid, status="transcription_failed")
+                logger.info("startup_recovered_finalizing_note", {"note_id": nid})
+            # Also recover generic stuck rows (recording/pending).
+            db_mod.migrate_stuck_recordings(conn)
+
+        # One-shot relocation of legacy transcripts directory.
+        moved = paths.migrate_legacy_transcripts_dir()
+        if moved:
+            logger.info("transcripts_dir_migrated", {"moved_files": moved})
+
+        yield
+
+        # Shutdown: wait for in-flight finalize tasks (max 120 s).
+        if _FINALIZE_TASKS:
+            logger.info(
+                "shutdown_awaiting_finalize_tasks",
+                {"count": len(_FINALIZE_TASKS)},
+            )
+            await asyncio.wait(list(_FINALIZE_TASKS), timeout=120)
+
+    app = FastAPI(title="lonta", version="0.1.0", lifespan=lifespan)
 
     # Request-logging middleware (JSONL logger configured in app/__init__.py).
     @app.middleware("http")
@@ -756,23 +583,6 @@ def create_app() -> FastAPI:
                 status_code=409,
                 content={"error": "concurrent_recording"},
             )
-        session_id = session["id"]
-
-        # 5. Load prompt for chunk transcription (live recording path only).
-        recording_prompt: str | None = prompt_mod.load()
-
-        # 6. Create per-session transcription queue and start the worker.
-        queue = await transcribe_queue.create_session_queue(
-            session_id,
-            session_id,  # note_id not yet known; will be set after seq=0 chunk
-            prompt=recording_prompt,
-        )
-        await queue.start()
-
-        # 7. Initialise per-session live-recording state.
-        _VAD_DETECTORS[session_id] = vad_realtime.ChunkBoundaryDetector()
-        _VAD_LOCKS[session_id] = asyncio.Lock()
-        _CHUNK_SEQ[session_id] = 0
 
         return JSONResponse(
             status_code=status.HTTP_201_CREATED, content=session
@@ -791,95 +601,21 @@ def create_app() -> FastAPI:
         if session is None:
             raise HTTPException(status_code=404, detail="recording session not found")
 
-        # -- Per-chunk temp file for VAD / pre-transcription (O(N) decode). --
-        # Only materialise when a live VAD detector exists for this session
-        # (i.e. session was created via POST /api/recordings, not directly in tests).
-        detector = _VAD_DETECTORS.get(session_id)
-        chunk_temp_path: Path | None = None
-
-        if detector is not None:
-            chunk_temp_path = (
-                Path(tempfile.gettempdir()) / f"{session_id}_chunk_{seq}.webm"
-            )
-            await asyncio.to_thread(
-                _copy_fileobj_to_path,
-                chunk.file,
-                chunk_temp_path,
-            )
-            await chunk.seek(0)
-
         try:
-            try:
-                result = await asyncio.to_thread(
-                    _append_recording_chunk_sync,
-                    session_id,
-                    chunk.file,
-                    int(seq),
-                    needs_note=session.note_id is None,
-                )
-            except recordings_mod.ChunkSeqConflict as exc:
-                return JSONResponse(  # type: ignore[return-value]
-                    status_code=status.HTTP_409_CONFLICT,
-                    content={"error": "duplicate seq", "seq": exc.seq},
-                )
-            except KeyError:
-                raise HTTPException(status_code=404, detail="recording session not found")
-
-            # -- VAD feed + queue push (only when live state exists). --
-            if detector is not None and chunk_temp_path is not None:
-                note_id = result.get("noteId")
-                # Late-bind the real note id (created by the seq=0 chunk) so the
-                # queue keys batch rows by note_id, not the session_id placeholder.
-                if note_id:
-                    sq_bind = await transcribe_queue.get_session_queue(session_id)
-                    if sq_bind is not None:
-                        sq_bind.set_note_id(note_id)
-                # Decode per-chunk temp file to PCM for VAD. Blobs after the
-                # first need the session's header blob prepended (see
-                # _decode_chunk_pcm) or ffmpeg rejects them outright.
-                try:
-                    pcm = await asyncio.to_thread(
-                        _decode_chunk_pcm, session_id, int(seq), chunk_temp_path
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "vad_decode_error",
-                        {"session_id": session_id, "seq": seq, "error": str(exc)},
-                    )
-                    pcm = None
-                if pcm is not None and pcm.size == 0:
-                    pcm = None
-
-                if pcm is not None:
-                    lock = _VAD_LOCKS.get(session_id)
-                    if lock is None:
-                        lock = asyncio.Lock()
-                        _VAD_LOCKS[session_id] = lock
-                    async with lock:
-                        boundaries = detector.feed(pcm)
-                        # Reserve sequential chunk_seq values inside the same lock
-                        # so concurrent chunk POSTs cannot collide on _CHUNK_SEQ.
-                        first_seq = _CHUNK_SEQ.get(session_id, 0)
-                        _CHUNK_SEQ[session_id] = first_seq + len(boundaries)
-
-                    if boundaries and note_id:
-                        sq = await transcribe_queue.get_session_queue(session_id)
-                        # Offload sync DB inserts + per-boundary WAV writes to
-                        # a worker thread so the request handler stops blocking
-                        # on disk I/O.  ChunkJob enqueue stays in the event
-                        # loop because sq.push is async.
-                        jobs = await asyncio.to_thread(
-                            _materialize_vad_jobs,
-                            session_id, note_id, first_seq, boundaries,
-                        )
-                        if sq is not None:
-                            for job in jobs:
-                                await sq.push(job)
-
-            return result
-        finally:
-            if chunk_temp_path is not None:
-                chunk_temp_path.unlink(missing_ok=True)
+            return await asyncio.to_thread(
+                _append_recording_chunk_sync,
+                session_id,
+                chunk.file,
+                int(seq),
+                needs_note=session.note_id is None,
+            )
+        except recordings_mod.ChunkSeqConflict as exc:
+            return JSONResponse(  # type: ignore[return-value]
+                status_code=status.HTTP_409_CONFLICT,
+                content={"error": "duplicate seq", "seq": exc.seq},
+            )
+        except KeyError:
+            raise HTTPException(status_code=404, detail="recording session not found")
 
     @app.post("/api/recordings/{session_id}/finalize")
     async def finalize_recording(
@@ -889,7 +625,6 @@ def create_app() -> FastAPI:
     ) -> StreamingResponse:
         title = body.title if body is not None else None
         duration = body.duration_sec if body is not None else None
-        skip_transcribe = body.skip_transcribe if body is not None else False
 
         # Validate session exists before entering SSE producer.
         session_check = recordings_mod.get_session(session_id)
@@ -976,119 +711,101 @@ def create_app() -> FastAPI:
                 note_id_ref[0] = note_id
                 session_audio_path: str = result["audioPath"]
 
-                # 2. Flush the VAD detector. The buffered tail (audio after the
-                #    last emitted boundary — the entire recording when no
-                #    boundary ever fired) is rescued as a final chunk job in the
-                #    transcribe path so the last utterance isn't dropped.
-                #    flush() itself returns None for all-silent tails; in
-                #    skip_transcribe mode the buffer is discarded with the session.
-                detector = _VAD_DETECTORS.get(session_id)
-                tail_boundary = None
-                tail_seq = 0
-                if detector is not None and not skip_transcribe:
-                    lock = _VAD_LOCKS.get(session_id)
-                    if lock is None:
-                        lock = asyncio.Lock()
-                        _VAD_LOCKS[session_id] = lock
-                    async with lock:
-                        tail_boundary = detector.flush()
-                        if tail_boundary is not None:
-                            tail_seq = _CHUNK_SEQ.get(session_id, 0)
-                            _CHUNK_SEQ[session_id] = tail_seq + 1
-
-                if skip_transcribe:
-                    # skip_transcribe path: audio file already moved; just
-                    # update DB status to 'audio_only' and emit complete.
-                    def _mark_audio_only() -> None:
+                # 2. Run batch transcription in a worker thread.
+                prompt = prompt_mod.load()
+                workdir = Path(tempfile.mkdtemp(prefix="lonta_batch_"))
+                try:
+                    batch_result = await asyncio.to_thread(
+                        batch_transcribe.run_batch_transcription,
+                        Path(session_audio_path),
+                        workdir=workdir,
+                        prompt=prompt,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "batch_transcription_error",
+                        {"note_id": note_id, "error": str(exc)},
+                    )
+                    def _mark_failed_bt() -> None:
                         with db_mod.open_db() as conn:
-                            db_mod.update_note(conn, note_id, status="audio_only")
-
-                    await asyncio.to_thread(_mark_audio_only)
+                            db_mod.update_note(
+                                conn, note_id, status="transcription_failed"
+                            )
+                    await asyncio.to_thread(_mark_failed_bt)
                     await queue.put(
                         _sse_event(
-                            "complete",
-                            {
-                                "status": "audio_only",
-                                "noteId": note_id,
-                                "audioPath": session_audio_path,
-                                "transcriptPath": None,
-                            },
+                            "error",
+                            {"error": "transcription_failed", "canRetry": False},
+                        )
+                    )
+                    return
+                finally:
+                    # The batch runner deletes its piece files; remove the
+                    # workdir itself too — on success AND the exception path
+                    # (a leaked dir can hold a ~45MB re-encoded file).
+                    await asyncio.to_thread(
+                        shutil.rmtree, workdir, ignore_errors=True
+                    )
+
+                # 3. Persist chunk rows, sidecar files, and .md in one worker thread.
+                def _persist_batch_result() -> Path | None:
+                    with db_mod.open_db() as conn:
+                        for piece in batch_result.pieces:
+                            chunk_id = recording_chunks.insert_chunk(
+                                conn, note_id, piece.seq, piece.start_ms, piece.end_ms
+                            )
+                            if piece.ok:
+                                recording_chunks.update_chunk_status(
+                                    conn, chunk_id, "success", piece.text
+                                )
+                                # Sidecar JSON for segments (only when segments exist).
+                                if piece.segments:
+                                    sidecar = _sidecar_segments_path(note_id, piece.seq)
+                                    sidecar_payload = json.dumps(
+                                        {"seq": piece.seq, "segments": piece.segments},
+                                        ensure_ascii=False,
+                                    )
+                                    _atomic_write_text(sidecar, sidecar_payload)
+                            else:
+                                recording_chunks.update_chunk_status(
+                                    conn, chunk_id, "failed"
+                                )
+
+                        if batch_result.all_failed:
+                            db_mod.update_note(
+                                conn, note_id, status="transcription_failed"
+                            )
+                            return None
+
+                        # Write auto-save .md (pure text — no markdown_writer).
+                        note_row = db_mod.get_note(conn, note_id)
+                        title_local = note_row["title"] if note_row else title
+                        basename_local = paths.audio_basename(
+                            title_local, datetime.now(), note_id=note_id
+                        )
+                        out_path_local = paths.transcripts_dir() / f"{basename_local}.md"
+                        out_path_local.parent.mkdir(parents=True, exist_ok=True)
+                        text_body = batch_result.merged_text_with_failure_markers()
+                        _atomic_write_text(out_path_local, text_body)
+                        db_mod.update_note(
+                            conn,
+                            note_id,
+                            status="transcribed",
+                            transcript_path=str(out_path_local),
+                        )
+                        return out_path_local
+
+                out_path = await asyncio.to_thread(_persist_batch_result)
+
+                # 4. Emit SSE event.
+                if batch_result.all_failed:
+                    await queue.put(
+                        _sse_event(
+                            "error",
+                            {"error": "transcription_failed", "canRetry": False},
                         )
                     )
                 else:
-                    # 3. Drain the queue — wait for all pre-transcription jobs.
-                    #    Use 5s retry sleep for the finalize path (vs 60s live).
-                    await queue.put(
-                        _sse_event("progress", {"status": "draining", "done": 0})
-                    )
-                    sq = await transcribe_queue.get_session_queue(session_id)
-                    if sq is not None:
-                        # Rescue the flushed VAD tail as the final chunk job
-                        # before draining, so it rides the same batch pipeline.
-                        if tail_boundary is not None:
-                            tail_jobs = await asyncio.to_thread(
-                                _materialize_vad_jobs,
-                                session_id,
-                                note_id,
-                                tail_seq,
-                                [tail_boundary],
-                            )
-                            for job in tail_jobs:
-                                await sq.push(job)
-                            logger.info(
-                                "vad_flush_rescued",
-                                {
-                                    "note_id": note_id,
-                                    "start_ms": tail_boundary[0],
-                                    "end_ms": tail_boundary[1],
-                                },
-                            )
-                        await sq.drain(retry_sleep_sec=5, max_retries=5)
-                    await queue.put(
-                        _sse_event("progress", {"status": "drained"})
-                    )
-
-                    # 4. (Option H retry removed — retries handled by groq_client
-                    #     at batch level; failed_ranges recorded in .md by markdown_writer.)
-
-                    # 5. Assemble transcript + persist note row in one off-loop step.
-                    #    Single DB connection covers chunks fetch, note update, and
-                    #    transcript file write to keep the event loop unblocked.
-                    def _persist_transcript() -> tuple[Path, bool, bool]:
-                        with db_mod.open_db() as conn:
-                            all_done_local = recording_chunks.all_chunks_done(conn, note_id)
-                            chunks_local = recording_chunks.get_chunks(conn, note_id)
-                            note_row_local = db_mod.get_note(conn, note_id)
-                            text_body = (
-                                "\n".join(c["text"] for c in chunks_local if c.get("text"))
-                                if chunks_local
-                                else ""
-                            )
-                            title_local = (
-                                note_row_local["title"] if note_row_local else title
-                            )
-                            basename_local = paths.audio_basename(
-                                title_local, datetime.now(), note_id=note_id
-                            )
-                            out_path_local = paths.transcripts_dir() / f"{basename_local}.md"
-                            out_path_local.parent.mkdir(parents=True, exist_ok=True)
-                            out_path_local.write_text(text_body, encoding="utf-8")
-                            db_mod.update_note(
-                                conn,
-                                note_id,
-                                status="transcribed",
-                                transcript_path=str(out_path_local),
-                            )
-                            return out_path_local, all_done_local, bool(chunks_local)
-
-                    out_path, all_done, has_chunks = await asyncio.to_thread(_persist_transcript)
-                    if not all_done and has_chunks:
-                        logger.warning(
-                            "finalize_chunks_not_all_done",
-                            {"session_id": session_id, "note_id": note_id},
-                        )
-
-                    # 6. Emit complete event.
                     await queue.put(
                         _sse_event(
                             "complete",
@@ -1097,20 +814,14 @@ def create_app() -> FastAPI:
                                 "noteId": note_id,
                                 "audioPath": session_audio_path,
                                 "transcriptPath": str(out_path),
+                                "partialFailure": batch_result.partial_failure,
+                                "failedRanges": batch_result.failed_ranges,
                             },
                         )
                     )
 
             finally:
-                # 7. Notify transcript-stream SSE clients before removing queues.
-                _tsq = _TRANSCRIPT_SSE_QUEUES.get(session_id)
-                if _tsq is not None:
-                    await _tsq.put(_sse_event("stream_end", {"reason": "finalized"}))
-                    await _tsq.put(None)  # sentinel to close the SSE generator
-                _remove_transcript_queue(session_id)
-                # 8. Remove session queue and clean up live state regardless of outcome.
-                await transcribe_queue.remove_session_queue(session_id)
-                _cleanup_session_live_state(session_id)
+                # 7. Clean up session state regardless of outcome.
                 recordings_mod.close_session(session_id)
                 await queue.put(None)
                 disconnect_task.cancel()
@@ -1119,27 +830,7 @@ def create_app() -> FastAPI:
                 except asyncio.CancelledError:
                     pass
 
-        return _sse_stream(producer)
-
-    # ------------------------------------------------------------------
-    # Transcript stream (realtime SSE — Phase 2)
-    # ------------------------------------------------------------------
-    @app.get("/api/recordings/{session_id}/transcript-stream")
-    async def transcript_stream(session_id: str) -> StreamingResponse:
-        """SSE channel that pushes chunk_transcribed / stream_end events."""
-        sse_queue = _register_transcript_queue(session_id)
-
-        async def _producer(queue: asyncio.Queue[bytes | None]) -> None:
-            try:
-                async for chunk in _merge_with_keepalive(sse_queue):
-                    await queue.put(chunk)
-            except asyncio.CancelledError:
-                _remove_transcript_queue(session_id)
-                raise
-            finally:
-                await queue.put(None)
-
-        return _sse_stream(_producer)
+        return _sse_stream(producer, track=True)
 
     # ------------------------------------------------------------------
     # Jobs list
@@ -1170,24 +861,19 @@ def create_app() -> FastAPI:
             "/", StaticFiles(directory=str(static_dir), html=True), name="static"
         )
 
-    # AC9: 앱 기동 시 stuck recording/pending row를 transcription_failed로 정리.
-    with db_mod.open_db() as conn:
-        db_mod.migrate_stuck_recordings(conn)
-
-    # One-shot relocation of legacy data/notes/transcripts/ → data/transcripts/.
-    # Idempotent: returns 0 when the legacy directory is absent.
-    moved = paths.migrate_legacy_transcripts_dir()
-    if moved:
-        logger.info("transcripts_dir_migrated", {"moved_files": moved})
-
     return app
 
 
-def _sse_stream(producer) -> StreamingResponse:
+def _sse_stream(producer, *, track: bool = False) -> StreamingResponse:
     """Wrap a producer coroutine in an SSE StreamingResponse.
 
     `producer(queue)` must push encoded events into the queue and finally push
     a `None` sentinel.
+
+    When ``track=True`` the created task is registered in ``_FINALIZE_TASKS``
+    so the lifespan shutdown handler can await its completion.  Only finalize
+    producers should set this flag — other endpoints share this helper and
+    must not pollute the registry.
     """
     queue: asyncio.Queue[bytes | None] = asyncio.Queue()
 
@@ -1196,12 +882,17 @@ def _sse_stream(producer) -> StreamingResponse:
             await producer(queue)
         except Exception as exc:  # noqa: BLE001 — ensure stream closes
             logger.error("sse_producer_crash", {"error": str(exc)})
+            # Detail stays in the server log — clients get a generic code
+            # (internal paths/stack fragments must not reach the browser).
             await queue.put(
-                _sse_event("error", {"message": str(exc), "canRetry": True})
+                _sse_event("error", {"message": "internal_error", "canRetry": True})
             )
             await queue.put(None)
 
-    asyncio.create_task(_run())
+    task = asyncio.create_task(_run())
+    if track:
+        _FINALIZE_TASKS.add(task)
+        task.add_done_callback(_FINALIZE_TASKS.discard)
     return StreamingResponse(
         _merge_with_keepalive(queue),
         media_type="text/event-stream",

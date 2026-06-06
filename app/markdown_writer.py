@@ -73,7 +73,7 @@ def write_transcript_md(
         if text is not None:
             lines.append(f"[{start_fmt}–{end_fmt}] {text}")
         else:
-            lines.append(f"[{start_fmt}–{end_fmt}] (전사 실패)")
+            lines.append(f"[{start_fmt}–{end_fmt}] [전사 실패 구간]")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")

@@ -6,7 +6,6 @@ Monkey-patches os.environ to control GROQ_API_KEY.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -80,14 +79,8 @@ class TestRecordingsGuard:
         assert data["error"] == "groq_api_key_missing"
 
     def test_201_when_groq_key_present(self, client_with_key, monkeypatch):
-        """With key set, POST /api/recordings proceeds past the guard.
-
-        We patch out the dependencies that would require a live DB/VAD session
-        to avoid coupling this test to those subsystems.
-        """
+        """With key set, POST /api/recordings proceeds past the guard."""
         import app.recordings as rec_mod
-        import app.transcribe_queue as tq_mod
-        import app.vad_realtime as vad_mod
 
         # Stub recordings.try_start_session to return a fake session dict.
         monkeypatch.setattr(
@@ -96,34 +89,8 @@ class TestRecordingsGuard:
             lambda title=None: {"id": "sess-test", "title": title or "untitled"},
         )
 
-        # Stub transcribe_queue.create_session_queue so no real asyncio queue is built.
-        fake_queue = MagicMock()
-        fake_queue.start = MagicMock(return_value=_coro_returning(None))
-
-        async def _fake_create(*args, **kwargs):
-            return fake_queue
-
-        monkeypatch.setattr(tq_mod, "create_session_queue", _fake_create)
-
-        # Stub VAD detector construction.
-        monkeypatch.setattr(
-            vad_mod,
-            "ChunkBoundaryDetector",
-            lambda: MagicMock(),
-        )
-
         resp = client_with_key.post("/api/recordings", json={})
         assert resp.status_code == 201
         assert resp.json()["id"] == "sess-test"
 
 
-# ---------------------------------------------------------------------------
-# Coroutine helper
-# ---------------------------------------------------------------------------
-
-
-def _coro_returning(value):
-    """Return a coroutine that immediately returns value."""
-    async def _inner(*args, **kwargs):
-        return value
-    return _inner()

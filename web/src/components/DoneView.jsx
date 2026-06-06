@@ -1,7 +1,7 @@
 import { ArrowLeft, Check, Download } from 'lucide-react'
 import './DoneView.css'
 
-export default function DoneView({ noteId, onDownload, onGoHome }) {
+export default function DoneView({ noteId, partialFailure, onDownload, onGoHome }) {
   const canDownload = noteId !== null
 
   return (
@@ -11,6 +11,11 @@ export default function DoneView({ noteId, onDownload, onGoHome }) {
           <Check size={32} strokeWidth={2.5} />
         </div>
         <span className="done-view__title">전사 완료</span>
+        {partialFailure && (
+          <span className="done-view__notice">
+            일부 구간 전사에 실패했어요 — 파일에 표시되어 있습니다
+          </span>
+        )}
       </div>
 
       <div className="done-view__actions">

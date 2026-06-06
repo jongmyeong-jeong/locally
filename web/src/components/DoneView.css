@@ -30,6 +30,13 @@
   color: #fafafa;
 }
 
+.done-view__notice {
+  font-family: 'Inter', sans-serif;
+  font-size: 13px;
+  color: #9f9fa9;
+  text-align: center;
+}
+
 .done-view__actions {
   display: flex;
   flex-direction: column;

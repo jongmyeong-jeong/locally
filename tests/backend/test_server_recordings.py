@@ -58,14 +58,10 @@ def _reset_sessions():
 
 @pytest.fixture(autouse=True)
 def _reset_live_state():
-    """Clear module-level VAD/queue state between tests."""
-    server_mod._VAD_DETECTORS.clear()
-    server_mod._VAD_LOCKS.clear()
-    server_mod._CHUNK_SEQ.clear()
+    """Clear module-level finalize-task registry between tests."""
+    server_mod._FINALIZE_TASKS.clear()
     yield
-    server_mod._VAD_DETECTORS.clear()
-    server_mod._VAD_LOCKS.clear()
-    server_mod._CHUNK_SEQ.clear()
+    server_mod._FINALIZE_TASKS.clear()
 
 
 @pytest.fixture
@@ -90,12 +86,85 @@ def _upload_chunk(client, session_id: str, seq: int, payload: bytes):
 
 
 # ---------------------------------------------------------------------------
+# Batch transcribe helpers (used by multiple test classes below)
+# ---------------------------------------------------------------------------
+
+
+def _make_batch_result(text: str, *, partial: bool = False, all_fail: bool = False):
+    """Build a minimal BatchResult for monkeypatching."""
+    from app.batch_transcribe import BatchResult, PieceResult
+
+    if all_fail:
+        pieces = [
+            PieceResult(
+                seq=0, start_ms=0, end_ms=30_000,
+                ok=False, text=None, segments=[], error_type="server_error",
+            )
+        ]
+        return BatchResult(pieces=pieces, failed_ranges=[{"start_ms": 0, "end_ms": 30_000}])
+
+    if partial:
+        pieces = [
+            PieceResult(
+                seq=0, start_ms=0, end_ms=15_000,
+                ok=True, text=text, segments=[], error_type=None,
+            ),
+            PieceResult(
+                seq=1, start_ms=15_000, end_ms=30_000,
+                ok=False, text=None, segments=[], error_type="server_error",
+            ),
+        ]
+        return BatchResult(
+            pieces=pieces,
+            failed_ranges=[{"start_ms": 15_000, "end_ms": 30_000}],
+        )
+
+    pieces = [
+        PieceResult(
+            seq=0, start_ms=0, end_ms=30_000,
+            ok=True, text=text, segments=[{"start_ms": 0, "end_ms": 1000, "text": text}],
+            error_type=None,
+        )
+    ]
+    return BatchResult(pieces=pieces, failed_ranges=[])
+
+
+def _patch_batch_transcribe_success(monkeypatch, text: str):
+    result = _make_batch_result(text)
+    monkeypatch.setattr(
+        "app.server.batch_transcribe.run_batch_transcription",
+        lambda *_a, **_kw: result,
+    )
+    return result
+
+
+def _patch_batch_transcribe_partial(monkeypatch, text: str):
+    result = _make_batch_result(text, partial=True)
+    monkeypatch.setattr(
+        "app.server.batch_transcribe.run_batch_transcription",
+        lambda *_a, **_kw: result,
+    )
+    return result
+
+
+def _patch_batch_transcribe_all_fail(monkeypatch):
+    result = _make_batch_result("", all_fail=True)
+    monkeypatch.setattr(
+        "app.server.batch_transcribe.run_batch_transcription",
+        lambda *_a, **_kw: result,
+    )
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
 
 class TestChunkFinalize:
-    def test_chunk_finalize_3_chunks(self, client):
+    def test_chunk_finalize_3_chunks(self, client, monkeypatch):
+        _patch_batch_transcribe_success(monkeypatch, "transcribed text")
+
         start = client.post("/api/recordings", json={"title": "demo"})
         assert start.status_code == 201
         sid = start.json()["id"]
@@ -266,88 +335,42 @@ class TestConcurrentRecording:
 
 class TestStreamingChunkAppend:
     def test_streaming_append_avoids_buffering_whole_upload(self, tmp_home):
-        """When no VAD detector is registered (session created directly, not via HTTP),
-        the chunk endpoint falls back to the original streaming path without calling
-        UploadFile.read()."""
+        """Chunk endpoint uses streaming path without calling UploadFile.read()."""
         app = create_app()
-        route = next(
-            route
-            for route in app.router.routes
-            if getattr(route, "path", None) == "/api/recordings/{session_id}/chunk"
-        )
-        endpoint = route.endpoint
-        session = recordings.start_session(title="stream")
-        upload = UploadFile(
-            file=io.BytesIO(b"x" * (1024 * 1024 + 17)),
-            filename="chunk.webm",
-            headers=Headers({"content-type": "application/octet-stream"}),
-        )
+        with TestClient(app):  # runs lifespan
+            route = next(
+                route
+                for route in app.router.routes
+                if getattr(route, "path", None) == "/api/recordings/{session_id}/chunk"
+            )
+            endpoint = route.endpoint
+            session = recordings.start_session(title="stream")
+            upload = UploadFile(
+                file=io.BytesIO(b"x" * (1024 * 1024 + 17)),
+                filename="chunk.webm",
+                headers=Headers({"content-type": "application/octet-stream"}),
+            )
 
-        async def _forbidden_read(*_args, **_kwargs):
-            raise AssertionError("server endpoint should not call UploadFile.read()")
+            async def _forbidden_read(*_args, **_kwargs):
+                raise AssertionError("server endpoint should not call UploadFile.read()")
 
-        upload.read = _forbidden_read  # type: ignore[method-assign]
+            upload.read = _forbidden_read  # type: ignore[method-assign]
 
-        body = asyncio.run(endpoint(session["id"], upload, 0))
-        assert body["bytes_written"] == 1024 * 1024 + 17
-        assert body["noteId"]
+            body = asyncio.run(endpoint(session["id"], upload, 0))
+            assert body["bytes_written"] == 1024 * 1024 + 17
+            assert body["noteId"]
 
 
 # ---------------------------------------------------------------------------
-# BA1–BA3: skipTranscribe finalize path
+# BA: finalize_twice_second_returns_404
 # ---------------------------------------------------------------------------
 
 
-class TestSkipTranscribeFinalize:
-    """BA1: skipTranscribe=true → audio moved, .md not created, status=audio_only."""
+class TestFinalizeIdempotent:
+    def test_finalize_twice_second_returns_404(self, client, monkeypatch):
+        """Second finalize call with the same session_id returns 404."""
+        _patch_batch_transcribe_success(monkeypatch, "hello")
 
-    def test_skip_transcribe_audio_moved_md_absent(self, client, tmp_path):
-        """BA1: webm is moved to audio_dir; no .md file is written."""
-        from app import paths
-
-        # Start session and upload one chunk so a note row exists.
-        sid = client.post("/api/recordings", json={"title": "skip-test"}).json()["id"]
-        _upload_chunk(client, sid, 0, b"\x00" * 128)
-
-        r = client.post(
-            f"/api/recordings/{sid}/finalize",
-            json={"durationSec": 5.0, "skipTranscribe": True},
-        )
-        assert r.status_code == 200, r.text
-        events = _parse_sse(r.text)
-        complete_events = [e for e in events if e.get("event") == "complete"]
-        assert complete_events, f"No complete event; events={events}"
-        body = complete_events[0]["data"]
-
-        # Audio file must exist in audio_dir.
-        assert body["status"] == "audio_only"
-        assert body["transcriptPath"] is None
-        audio_path = Path(body["audioPath"])
-        assert audio_path.exists(), f"audio file missing: {audio_path}"
-
-        # No .md file should have been created.
-        md_files = list(paths.transcripts_dir().glob("*.md"))
-        assert md_files == [], f"Unexpected .md files: {md_files}"
-
-    def test_skip_transcribe_db_status_audio_only(self, client):
-        """BA2: DB note status = 'audio_only' after skipTranscribe finalize."""
-        sid = client.post("/api/recordings", json={"title": "skip-db"}).json()["id"]
-        chunk_resp = _upload_chunk(client, sid, 0, b"\x00" * 128)
-        note_id = chunk_resp.json()["noteId"]
-
-        r = client.post(
-            f"/api/recordings/{sid}/finalize",
-            json={"durationSec": 5.0, "skipTranscribe": True},
-        )
-        assert r.status_code == 200, r.text
-        events = _parse_sse(r.text)
-        assert any(e.get("event") == "complete" for e in events)
-
-        note = client.get(f"/api/notes/{note_id}").json()
-        assert note["status"] == "audio_only"
-
-    def test_finalize_twice_second_returns_404(self, client):
-        """BA3: Second finalize call with the same session_id returns 404."""
         sid = client.post("/api/recordings", json={"title": "idem"}).json()["id"]
         _upload_chunk(client, sid, 0, b"\x00" * 128)
 
@@ -366,42 +389,229 @@ class TestSkipTranscribeFinalize:
 
 
 # ---------------------------------------------------------------------------
-# BA4 booster: drain() spy — finalize passes retry_sleep_sec=5, max_retries=5
+# AC1: N chunk uploads → batch_transcribe not called during chunk uploads
 # ---------------------------------------------------------------------------
 
 
-class TestFinalizeCallsDrainArgs:
-    """BA4-ext: finalize handler calls sq.drain(retry_sleep_sec=5, max_retries=5)."""
+class TestChunksDoNotCallBatch:
+    def test_chunk_uploads_do_not_invoke_batch_transcribe(self, client, monkeypatch):
+        """AC1: run_batch_transcription called 0 times during chunk uploads."""
+        calls: list = []
 
-    def test_finalize_calls_drain_with_5sec_5retries(self, client, monkeypatch):
-        """Spy on SessionTranscribeQueue.drain to verify finalize passes correct args."""
-        from unittest.mock import AsyncMock, call
+        def _spy(*_a, **_kw):
+            calls.append(1)
+            return _make_batch_result("text")
 
-        import app.transcribe_queue as tq_mod
+        monkeypatch.setattr("app.server.batch_transcribe.run_batch_transcription", _spy)
 
-        drain_calls: list[dict] = []
-        original_drain = tq_mod.SessionTranscribeQueue.drain
+        sid = client.post("/api/recordings", json={"title": "noop"}).json()["id"]
+        for seq in range(3):
+            r = _upload_chunk(client, sid, seq, b"\x00" * 64)
+            assert r.status_code == 200
 
-        async def _spy_drain(self, retry_sleep_sec=60, max_retries=5):
-            drain_calls.append({"retry_sleep_sec": retry_sleep_sec, "max_retries": max_retries})
-            # Call through so the queue actually drains (avoids hanging).
-            await original_drain(self, retry_sleep_sec=retry_sleep_sec, max_retries=max_retries)
+        assert calls == [], f"batch_transcribe called {len(calls)} times during chunk upload"
 
-        monkeypatch.setattr(tq_mod.SessionTranscribeQueue, "drain", _spy_drain)
 
-        sid = client.post("/api/recordings", json={"title": "drain-spy"}).json()["id"]
-        _upload_chunk(client, sid, 0, b"\x00" * 128)
+# ---------------------------------------------------------------------------
+# Batch transcription finalize tests
+# ---------------------------------------------------------------------------
 
-        r = client.post(
-            f"/api/recordings/{sid}/finalize",
-            json={"durationSec": 5.0},
-        )
+
+class TestFinalizeSingleSuccess:
+    def test_complete_payload_and_md(self, client, monkeypatch):
+        """Single success: complete payload has partialFailure=False, .md content matches."""
+        from app import paths
+
+        _patch_batch_transcribe_success(monkeypatch, "hello world")
+
+        sid = client.post("/api/recordings", json={"title": "success-test"}).json()["id"]
+        chunk_resp = _upload_chunk(client, sid, 0, b"\x00" * 128)
+        note_id = chunk_resp.json()["noteId"]
+
+        r = client.post(f"/api/recordings/{sid}/finalize", json={"durationSec": 5.0})
         assert r.status_code == 200, r.text
+        events = _parse_sse(r.text)
+        complete_events = [e for e in events if e.get("event") == "complete"]
+        assert complete_events, f"No complete event; events={events}"
+        body = complete_events[0]["data"]
+
+        assert body["partialFailure"] is False
+        assert body["failedRanges"] == []
+        assert body["noteId"] == note_id
+        assert Path(body["audioPath"]).exists()
+
+        transcript_path = Path(body["transcriptPath"])
+        assert transcript_path.exists()
+        content = transcript_path.read_text(encoding="utf-8")
+        assert "hello world" in content
+
+        # Sidecar file should exist (seq=0 has segments).
+        sidecar_files = list(paths.audio_dir().glob(f"segments-{note_id}-*.json"))
+        assert sidecar_files, "No sidecar JSON written"
+
+        # Chunk row should be status='success'.
+        from app import db as _db
+        from app import recording_chunks as _rc
+        with _db.open_db() as conn:
+            chunks = _rc.get_chunks(conn, note_id)
+        assert len(chunks) == 1
+        assert chunks[0]["status"] == "success"
+
+    def test_note_status_transcribed(self, client, monkeypatch):
+        """DB note status = 'transcribed' after successful finalize."""
+        _patch_batch_transcribe_success(monkeypatch, "text")
+
+        sid = client.post("/api/recordings", json={}).json()["id"]
+        chunk_resp = _upload_chunk(client, sid, 0, b"\x00" * 128)
+        note_id = chunk_resp.json()["noteId"]
+
+        r = client.post(f"/api/recordings/{sid}/finalize", json={"durationSec": 5.0})
+        assert r.status_code == 200
         events = _parse_sse(r.text)
         assert any(e.get("event") == "complete" for e in events)
 
-        assert len(drain_calls) >= 1, "drain() was never called during finalize"
-        # The finalize path must pass retry_sleep_sec=5, max_retries=5.
-        assert drain_calls[0] == {"retry_sleep_sec": 5, "max_retries": 5}, (
-            f"drain() called with wrong args: {drain_calls[0]}"
+        note = client.get(f"/api/notes/{note_id}").json()
+        assert note["status"] == "transcribed"
+
+
+class TestFinalizePartialFailure:
+    def test_partial_failure_payload(self, client, monkeypatch):
+        """Partial failure: complete event with partialFailure=True and failedRanges."""
+        _patch_batch_transcribe_partial(monkeypatch, "good part")
+
+        sid = client.post("/api/recordings", json={"title": "partial"}).json()["id"]
+        _upload_chunk(client, sid, 0, b"\x00" * 128)
+
+        r = client.post(f"/api/recordings/{sid}/finalize", json={"durationSec": 30.0})
+        assert r.status_code == 200
+        events = _parse_sse(r.text)
+        complete_events = [e for e in events if e.get("event") == "complete"]
+        assert complete_events, f"No complete event; events={events}"
+        body = complete_events[0]["data"]
+
+        assert body["partialFailure"] is True
+        assert len(body["failedRanges"]) == 1
+        assert body["failedRanges"][0] == {"start_ms": 15_000, "end_ms": 30_000}
+
+    def test_partial_failure_md_contains_marker(self, client, monkeypatch):
+        """Partial failure: .md contains [전사 실패 구간] marker."""
+        _patch_batch_transcribe_partial(monkeypatch, "good part")
+
+        sid = client.post("/api/recordings", json={"title": "partial-md"}).json()["id"]
+        _upload_chunk(client, sid, 0, b"\x00" * 128)
+
+        r = client.post(f"/api/recordings/{sid}/finalize", json={"durationSec": 30.0})
+        assert r.status_code == 200
+        events = _parse_sse(r.text)
+        complete_events = [e for e in events if e.get("event") == "complete"]
+        assert complete_events
+        body = complete_events[0]["data"]
+
+        transcript_path = Path(body["transcriptPath"])
+        content = transcript_path.read_text(encoding="utf-8")
+        assert "전사 실패 구간" in content
+        assert "good part" in content
+
+    def test_partial_failure_chunk_rows(self, client, monkeypatch):
+        """Partial failure: success chunk has status='success', failed chunk status='failed'."""
+        _patch_batch_transcribe_partial(monkeypatch, "good part")
+
+        sid = client.post("/api/recordings", json={}).json()["id"]
+        chunk_resp = _upload_chunk(client, sid, 0, b"\x00" * 128)
+        note_id = chunk_resp.json()["noteId"]
+
+        r = client.post(f"/api/recordings/{sid}/finalize", json={"durationSec": 30.0})
+        assert r.status_code == 200
+        events = _parse_sse(r.text)
+        assert any(e.get("event") == "complete" for e in events)
+
+        from app import db as _db
+        from app import recording_chunks as _rc
+        with _db.open_db() as conn:
+            chunks = _rc.get_chunks(conn, note_id)
+
+        assert len(chunks) == 2
+        statuses = {c["seq"]: c["status"] for c in chunks}
+        assert statuses[0] == "success"
+        assert statuses[1] == "failed"
+
+    def test_partial_failure_download_failed_ranges(self, client, monkeypatch):
+        """Download endpoint derives failedRanges from chunk rows with status='failed'."""
+        _patch_batch_transcribe_partial(monkeypatch, "good part")
+
+        sid = client.post("/api/recordings", json={}).json()["id"]
+        chunk_resp = _upload_chunk(client, sid, 0, b"\x00" * 128)
+        note_id = chunk_resp.json()["noteId"]
+
+        r = client.post(f"/api/recordings/{sid}/finalize", json={"durationSec": 30.0})
+        assert r.status_code == 200
+        events = _parse_sse(r.text)
+        assert any(e.get("event") == "complete" for e in events)
+
+        # Download endpoint reads failed ranges from DB chunk rows.
+        r2 = client.get(f"/api/notes/{note_id}/download")
+        assert r2.status_code == 200
+        content = r2.text
+        assert "전사 실패 구간" in content
+
+
+class TestFinalizeAllFail:
+    def test_all_fail_emits_error_event(self, client, monkeypatch):
+        """All-fail: SSE error event with error='transcription_failed'."""
+        _patch_batch_transcribe_all_fail(monkeypatch)
+
+        sid = client.post("/api/recordings", json={}).json()["id"]
+        _upload_chunk(client, sid, 0, b"\x00" * 128)
+
+        r = client.post(f"/api/recordings/{sid}/finalize", json={"durationSec": 5.0})
+        assert r.status_code == 200
+        events = _parse_sse(r.text)
+        error_events = [e for e in events if e.get("event") == "error"]
+        assert error_events, f"No error event; events={events}"
+        assert error_events[0]["data"]["error"] == "transcription_failed"
+
+    def test_all_fail_note_status(self, client, monkeypatch):
+        """All-fail: DB note status = 'transcription_failed'; no .md written."""
+        from app import paths
+        _patch_batch_transcribe_all_fail(monkeypatch)
+
+        sid = client.post("/api/recordings", json={}).json()["id"]
+        chunk_resp = _upload_chunk(client, sid, 0, b"\x00" * 128)
+        note_id = chunk_resp.json()["noteId"]
+
+        r = client.post(f"/api/recordings/{sid}/finalize", json={"durationSec": 5.0})
+        assert r.status_code == 200
+
+        note = client.get(f"/api/notes/{note_id}").json()
+        assert note["status"] == "transcription_failed"
+
+        md_files = list(paths.transcripts_dir().glob("*.md"))
+        assert md_files == [], f"Unexpected .md files: {md_files}"
+
+
+# ---------------------------------------------------------------------------
+# Lifespan: startup recovery of 'finalizing' notes
+# ---------------------------------------------------------------------------
+
+
+class TestLifespanStartupRecovery:
+    def test_startup_recovers_finalizing_note(self, tmp_home, monkeypatch):
+        """Startup recovery: note with status='finalizing' is flipped to 'transcription_failed'."""
+        monkeypatch.setenv("GROQ_API_KEY", "test-key")
+        from app import db as _db
+
+        # Pre-seed a 'finalizing' note directly in the DB.
+        with _db.open_db() as conn:
+            note = _db.create_note(conn, title="stuck", status="finalizing")
+            note_id = note["id"]
+
+        # Starting the app via TestClient triggers lifespan startup.
+        app = create_app()
+        with TestClient(app):
+            pass
+
+        with _db.open_db() as conn:
+            recovered = _db.get_note(conn, note_id)
+        assert recovered["status"] == "transcription_failed", (
+            f"Expected 'transcription_failed', got {recovered['status']!r}"
         )

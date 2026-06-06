@@ -13,13 +13,8 @@ const { apiMock } = vi.hoisted(() => ({
   },
 }))
 
-const { transcriptStreamMock } = vi.hoisted(() => ({
-  transcriptStreamMock: vi.fn(() => () => {}),
-}))
-
 vi.mock('@/api/client', () => ({
   default: apiMock,
-  transcriptStream: transcriptStreamMock,
 }))
 
 vi.mock('@/hooks/useSystemInfo', () => ({
@@ -71,7 +66,7 @@ describe('Recording', () => {
     apiMock.finalizeRecording.mockImplementation((_id, _body, handlers) => {
       if (handlers) {
         Promise.resolve().then(() =>
-          handlers.complete({ payload: { noteId: 'doc-1' } }),
+          handlers.complete({ payload: { noteId: 'doc-1', partialFailure: false } }),
         )
         return () => {}
       }
@@ -244,7 +239,7 @@ describe('Recording', () => {
   })
 })
 
-// ─── T1–T7: transcribing/done screens + liveTranscriptionFailed ───────────────
+// ─── T1–T7: transcribing/done screens ────────────────────────────────────────
 
 function renderRecording() {
   const router = createMemoryRouter([{ path: '/', element: <Recording /> }], {
@@ -253,7 +248,7 @@ function renderRecording() {
   return render(<RouterProvider router={router} />)
 }
 
-async function startAndStop({ uploadResolve, now, nowRef }) {
+async function startAndStop({ uploadResolve, nowRef }) {
   // Start recording
   fireEvent.click(screen.getByRole('button', { name: '녹음 시작' }))
   await waitFor(() => expect(apiMock.createRecording).toHaveBeenCalledTimes(1))
@@ -269,7 +264,6 @@ async function startAndStop({ uploadResolve, now, nowRef }) {
 }
 
 describe('Recording — transcribing/done screens', () => {
-  let nowValue
   let uploadResolve
   let originalMediaRecorder
   let originalGetUserMedia
@@ -295,18 +289,16 @@ describe('Recording — transcribing/done screens', () => {
     apiMock.postRecordingChunk.mockImplementation(
       () => new Promise((resolve) => { uploadResolve = resolve }),
     )
-    // Default: finalize succeeds with noteId
+    // Default: finalize succeeds with noteId, no partial failure
     apiMock.finalizeRecording.mockImplementation((_id, _body, handlers) => {
       if (handlers) {
         Promise.resolve().then(() =>
-          handlers.complete({ payload: { noteId: 'doc-1' } }),
+          handlers.complete({ payload: { noteId: 'doc-1', partialFailure: false } }),
         )
         return () => {}
       }
       return Promise.resolve({ noteId: 'doc-1' })
     })
-
-    transcriptStreamMock.mockReturnValue(() => {})
 
     const fakeStream = { getTracks: () => [{ stop: vi.fn() }] }
     originalGetUserMedia = navigator.mediaDevices?.getUserMedia
@@ -402,12 +394,12 @@ describe('Recording — transcribing/done screens', () => {
     expect(screen.getByRole('button', { name: '파일로 내려받기' })).toBeInTheDocument()
   })
 
-  // T3: SSE error → done screen + ErrorModal
-  it('T3: finalize SSE error shows done screen with error modal', async () => {
+  // T3: SSE error → idle + ErrorModal '전사에 실패했어요'
+  it('T3: finalize SSE error shows error modal and returns to idle', async () => {
     apiMock.finalizeRecording.mockImplementation((_id, _body, handlers) => {
       if (handlers) {
         Promise.resolve().then(() =>
-          handlers.error({ payload: { noteId: 'doc-1', error: 'groq_failed' } }),
+          handlers.error({ payload: { error: 'transcription_failed' } }),
         )
         return () => {}
       }
@@ -424,10 +416,19 @@ describe('Recording — transcribing/done screens', () => {
     await waitFor(() => expect(apiMock.postRecordingChunk).toHaveBeenCalledTimes(1))
     uploadResolve()
 
+    // Error modal with correct title appears
     await waitFor(() => {
-      expect(screen.getByText('전사 완료')).toBeInTheDocument()
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
     })
-    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect(screen.getByText('전사에 실패했어요')).toBeInTheDocument()
+
+    // After closing modal, idle state is shown (back button visible)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: '녹음 시작' })).toBeInTheDocument()
+    })
+    expect(screen.queryByText('전사 완료')).toBeNull()
+    expect(screen.queryByText('전사 마무리 중')).toBeNull()
   })
 
   // T4: SSE transportError → idle
@@ -459,18 +460,42 @@ describe('Recording — transcribing/done screens', () => {
     expect(screen.queryByText('전사 완료')).toBeNull()
   })
 
-  // T5: liveTranscriptionFailed=true → stop sends skipTranscribe:true → idle
-  it('T5: liveTranscriptionFailed stop path calls finalizeRecording with skipTranscribe:true and returns to idle', async () => {
-    let capturedGroqErrorHandler
-    transcriptStreamMock.mockImplementation((_id, handlers) => {
-      capturedGroqErrorHandler = handlers.onGroqError
-      return () => {}
-    })
-
+  // T5: SSE complete with partialFailure:true → DoneView shows notice text
+  it('T5: finalize SSE complete with partialFailure:true shows notice in DoneView', async () => {
     apiMock.finalizeRecording.mockImplementation((_id, _body, handlers) => {
       if (handlers) {
         Promise.resolve().then(() =>
-          handlers.complete({ payload: { status: 'audio_only', noteId: null, audioPath: '/audio.webm', transcriptPath: null } }),
+          handlers.complete({ payload: { noteId: 'doc-1', partialFailure: true } }),
+        )
+        return () => {}
+      }
+      return Promise.resolve({ noteId: 'doc-1' })
+    })
+
+    renderRecording()
+    fireEvent.click(screen.getByRole('button', { name: '녹음 시작' }))
+    await waitFor(() => expect(apiMock.createRecording).toHaveBeenCalledTimes(1))
+    await screen.findByRole('button', { name: '정지' })
+
+    nowRef.current = 2000
+    fireEvent.click(screen.getByRole('button', { name: '정지' }))
+    await waitFor(() => expect(apiMock.postRecordingChunk).toHaveBeenCalledTimes(1))
+    uploadResolve()
+
+    await waitFor(() => {
+      expect(screen.getByText('전사 완료')).toBeInTheDocument()
+    })
+    expect(
+      screen.getByText('일부 구간 전사에 실패했어요 — 파일에 표시되어 있습니다'),
+    ).toBeInTheDocument()
+  })
+
+  // T6: SSE error with transcription_failed → ErrorModal '전사에 실패했어요' + back to idle
+  it('T6: finalize SSE error transcription_failed shows correct modal and returns to idle', async () => {
+    apiMock.finalizeRecording.mockImplementation((_id, _body, handlers) => {
+      if (handlers) {
+        Promise.resolve().then(() =>
+          handlers.error({ payload: { error: 'transcription_failed' } }),
         )
         return () => {}
       }
@@ -482,42 +507,35 @@ describe('Recording — transcribing/done screens', () => {
     await waitFor(() => expect(apiMock.createRecording).toHaveBeenCalledTimes(1))
     await screen.findByRole('button', { name: '정지' })
 
-    // Simulate live transcription failure before stopping
-    await waitFor(() => expect(capturedGroqErrorHandler).toBeDefined())
-    capturedGroqErrorHandler({ errorType: 'network_failed_max_retries' })
-
-    // Wait for the modal to confirm liveTranscriptionFailed state has propagated
-    await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument())
-    // Close the modal so it doesn't interfere
-    fireEvent.keyDown(window, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-
     nowRef.current = 2000
     fireEvent.click(screen.getByRole('button', { name: '정지' }))
     await waitFor(() => expect(apiMock.postRecordingChunk).toHaveBeenCalledTimes(1))
     uploadResolve()
 
     await waitFor(() => {
-      expect(apiMock.finalizeRecording).toHaveBeenCalledWith(
-        'session-1',
-        expect.objectContaining({ skipTranscribe: true }),
-        expect.objectContaining({ complete: expect.any(Function) }),
-      )
+      expect(screen.getByRole('dialog')).toBeInTheDocument()
     })
+    expect(screen.getByText('전사에 실패했어요')).toBeInTheDocument()
 
+    // Close modal → idle
+    fireEvent.keyDown(window, { key: 'Escape' })
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '녹음 시작' })).toBeInTheDocument()
     })
-    expect(screen.queryByText('전사 마무리 중')).toBeNull()
-    expect(screen.queryByText('전사 완료')).toBeNull()
   })
 
-  // T6: onGroqError(network_failed_max_retries) → ErrorModal shown; rate_limit camelCase regression guard
-  it('T6: onGroqError network_failed_max_retries shows modal; rate_limit also works via camelCase errorType', async () => {
+  // T7a: complete → done, then transportError fires (stream EOF race) → no modal on done screen
+  it('T7a: transportError after complete does not open modal on done screen', async () => {
     let capturedHandlers
-    transcriptStreamMock.mockImplementation((_id, handlers) => {
+    apiMock.finalizeRecording.mockImplementation((_id, _body, handlers) => {
       capturedHandlers = handlers
-      return () => {}
+      if (handlers) {
+        Promise.resolve().then(() =>
+          handlers.complete({ payload: { noteId: 'doc-1', partialFailure: false } }),
+        )
+        return () => {}
+      }
+      return Promise.resolve({ noteId: 'doc-1' })
     })
 
     renderRecording()
@@ -525,28 +543,23 @@ describe('Recording — transcribing/done screens', () => {
     await waitFor(() => expect(apiMock.createRecording).toHaveBeenCalledTimes(1))
     await screen.findByRole('button', { name: '정지' })
 
-    await waitFor(() => expect(capturedHandlers).toBeDefined())
+    nowRef.current = 2000
+    fireEvent.click(screen.getByRole('button', { name: '정지' }))
+    await waitFor(() => expect(apiMock.postRecordingChunk).toHaveBeenCalledTimes(1))
+    uploadResolve()
 
-    // network_failed_max_retries → modal
-    capturedHandlers.onGroqError({ errorType: 'network_failed_max_retries' })
+    // Wait for done screen
     await waitFor(() => {
-      expect(screen.getByRole('dialog')).toBeInTheDocument()
+      expect(screen.getByText('전사 완료')).toBeInTheDocument()
     })
 
-    // Close modal via Escape
-    fireEvent.keyDown(window, { key: 'Escape' })
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog')).toBeNull()
-    })
+    // Simulate transportError firing after complete (stream EOF race)
+    capturedHandlers.transportError(new Error('stream closed'))
 
-    // rate_limit via camelCase (regression guard: if it were snake_case error_type this would not fire)
-    capturedHandlers.onGroqError({ errorType: 'rate_limit' })
-    await waitFor(() => {
-      expect(screen.getByRole('dialog')).toBeInTheDocument()
-    })
-    // Verify the exact rate_limit modal title — fallback unexpected_error modal would
-    // show '전사 오류' instead, so this guards against snake_case regression.
-    expect(screen.getByText('오늘 groq 무료 한도 소진')).toBeInTheDocument()
+    // No modal should appear — finalizeSettled guards against this
+    expect(screen.queryByRole('dialog')).toBeNull()
+    // Still on done screen
+    expect(screen.getByText('전사 완료')).toBeInTheDocument()
   })
 
   // T7: done → "← 시작 화면으로" → idle + state reset

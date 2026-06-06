@@ -80,23 +80,23 @@ class TestFailedRanges:
     def test_failed_marker_text(self, tmp_path):
         failed = [{"start_ms": 0, "end_ms": 60_000}]
         content = _write_and_read(tmp_path, "T", _dt(), [], failed)
-        assert "(전사 실패)" in content
+        assert "[전사 실패 구간]" in content
 
     def test_failed_marker_uses_en_dash(self, tmp_path):
         """The timestamp separator in failed markers must be EN-DASH (U+2013), not ASCII hyphen."""
         failed = [{"start_ms": 0, "end_ms": 60_000}]
         content = _write_and_read(tmp_path, "T", _dt(), [], failed)
         # Find the failed line and verify it contains '–' (U+2013)
-        failed_line = next(line for line in content.splitlines() if "(전사 실패)" in line)
+        failed_line = next(line for line in content.splitlines() if "[전사 실패 구간]" in line)
         assert "–" in failed_line, f"EN-DASH not found in: {failed_line!r}"
         # Must NOT be an ASCII hyphen between the timestamps
-        # The line format is [HH:MM:SS–HH:MM:SS] (전사 실패)
+        # The line format is [HH:MM:SS–HH:MM:SS] [전사 실패 구간]
         assert "–" in failed_line
 
     def test_failed_range_timestamp(self, tmp_path):
         failed = [{"start_ms": 0, "end_ms": 60_000}]
         content = _write_and_read(tmp_path, "T", _dt(), [], failed)
-        assert "[00:00:00–00:01:00] (전사 실패)" in content
+        assert "[00:00:00–00:01:00] [전사 실패 구간]" in content
 
     def test_empty_segments_non_empty_failed(self, tmp_path):
         failed = [
@@ -104,7 +104,7 @@ class TestFailedRanges:
             {"start_ms": 30_000, "end_ms": 60_000},
         ]
         content = _write_and_read(tmp_path, "T", _dt(), [], failed)
-        assert content.count("(전사 실패)") == 2
+        assert content.count("[전사 실패 구간]") == 2
         # Header lines still present
         assert "# T" in content
         assert "녹음 일시:" in content
@@ -116,7 +116,7 @@ class TestMixedSorting:
         failed = [{"start_ms": 0, "end_ms": 60_000}]
         content = _write_and_read(tmp_path, "T", _dt(), segments, failed)
 
-        idx_failed = content.index("(전사 실패)")
+        idx_failed = content.index("[전사 실패 구간]")
         idx_after = content.index("after failure")
         assert idx_failed < idx_after
 
