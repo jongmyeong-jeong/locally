@@ -6,13 +6,11 @@ export default function DoneView({ noteId, onDownload, onGoHome }) {
 
   return (
     <div className="done-view">
-      <div className="done-view__icon">
-        <Check size={28} strokeWidth={2.5} />
-      </div>
-
-      <div className="done-view__text">
-        <span className="done-view__title">전사가 완료됐어요</span>
-        <span className="done-view__subtitle">파일이 자동으로 저장되었습니다</span>
+      <div className="done-view__header">
+        <div className="done-view__icon">
+          <Check size={32} strokeWidth={2.5} />
+        </div>
+        <span className="done-view__title">전사 완료</span>
       </div>
 
       <div className="done-view__actions">
@@ -22,7 +20,7 @@ export default function DoneView({ noteId, onDownload, onGoHome }) {
           onClick={canDownload ? onDownload : undefined}
           disabled={!canDownload}
         >
-          <Download size={16} strokeWidth={1.75} />
+          <Download size={18} strokeWidth={1.75} />
           파일로 내려받기
         </button>
         <button
@@ -30,7 +28,7 @@ export default function DoneView({ noteId, onDownload, onGoHome }) {
           className="done-view__btn done-view__btn--ghost"
           onClick={onGoHome}
         >
-          <ArrowLeft size={14} strokeWidth={1.75} />
+          <ArrowLeft size={18} strokeWidth={1.75} />
           시작 화면으로
         </button>
       </div>

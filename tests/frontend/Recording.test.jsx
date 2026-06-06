@@ -374,7 +374,7 @@ describe('Recording — transcribing/done screens', () => {
     uploadResolve()
 
     await waitFor(() => {
-      expect(screen.getByText('전사하는 중이에요')).toBeInTheDocument()
+      expect(screen.getByText('전사 마무리 중')).toBeInTheDocument()
     })
 
     // beforeunload should NOT trigger in transcribing state
@@ -385,7 +385,7 @@ describe('Recording — transcribing/done screens', () => {
   })
 
   // T2: SSE complete → recordingState === 'done', DoneView shown
-  it('T2: finalize SSE complete shows DoneView with 전사가 완료됐어요', async () => {
+  it('T2: finalize SSE complete shows DoneView with 전사 완료', async () => {
     renderRecording()
     fireEvent.click(screen.getByRole('button', { name: '녹음 시작' }))
     await waitFor(() => expect(apiMock.createRecording).toHaveBeenCalledTimes(1))
@@ -397,9 +397,8 @@ describe('Recording — transcribing/done screens', () => {
     uploadResolve()
 
     await waitFor(() => {
-      expect(screen.getByText('전사가 완료됐어요')).toBeInTheDocument()
+      expect(screen.getByText('전사 완료')).toBeInTheDocument()
     })
-    expect(screen.getByText('파일이 자동으로 저장되었습니다')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '파일로 내려받기' })).toBeInTheDocument()
   })
 
@@ -426,7 +425,7 @@ describe('Recording — transcribing/done screens', () => {
     uploadResolve()
 
     await waitFor(() => {
-      expect(screen.getByText('전사가 완료됐어요')).toBeInTheDocument()
+      expect(screen.getByText('전사 완료')).toBeInTheDocument()
     })
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
@@ -456,8 +455,8 @@ describe('Recording — transcribing/done screens', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '녹음 시작' })).toBeInTheDocument()
     })
-    expect(screen.queryByText('전사하는 중이에요')).toBeNull()
-    expect(screen.queryByText('전사가 완료됐어요')).toBeNull()
+    expect(screen.queryByText('전사 마무리 중')).toBeNull()
+    expect(screen.queryByText('전사 완료')).toBeNull()
   })
 
   // T5: liveTranscriptionFailed=true → stop sends skipTranscribe:true → idle
@@ -509,8 +508,8 @@ describe('Recording — transcribing/done screens', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '녹음 시작' })).toBeInTheDocument()
     })
-    expect(screen.queryByText('전사하는 중이에요')).toBeNull()
-    expect(screen.queryByText('전사가 완료됐어요')).toBeNull()
+    expect(screen.queryByText('전사 마무리 중')).toBeNull()
+    expect(screen.queryByText('전사 완료')).toBeNull()
   })
 
   // T6: onGroqError(network_failed_max_retries) → ErrorModal shown; rate_limit camelCase regression guard
@@ -563,7 +562,7 @@ describe('Recording — transcribing/done screens', () => {
     uploadResolve()
 
     await waitFor(() => {
-      expect(screen.getByText('전사가 완료됐어요')).toBeInTheDocument()
+      expect(screen.getByText('전사 완료')).toBeInTheDocument()
     })
 
     fireEvent.click(screen.getByRole('button', { name: '시작 화면으로' }))
@@ -571,7 +570,7 @@ describe('Recording — transcribing/done screens', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: '녹음 시작' })).toBeInTheDocument()
     })
-    expect(screen.queryByText('전사가 완료됐어요')).toBeNull()
-    expect(screen.queryByText('전사하는 중이에요')).toBeNull()
+    expect(screen.queryByText('전사 완료')).toBeNull()
+    expect(screen.queryByText('전사 마무리 중')).toBeNull()
   })
 })

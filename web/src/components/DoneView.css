@@ -2,6 +2,13 @@
   display: flex;
   flex-direction: column;
   align-items: center;
+  gap: 32px;
+}
+
+.done-view__header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 24px;
 }
 
@@ -12,16 +19,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 75, 58, 0.12);
-  border: 1px solid rgba(255, 75, 58, 0.25);
+  background: rgba(255, 75, 58, 0.2);
   color: #ff4b3a;
-}
-
-.done-view__text {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
 }
 
 .done-view__title {
@@ -31,19 +30,11 @@
   color: #fafafa;
 }
 
-.done-view__subtitle {
-  font-family: 'Inter', sans-serif;
-  font-weight: 400;
-  font-size: 14px;
-  color: #a1a1aa;
-}
-
 .done-view__actions {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  margin-top: 8px;
 }
 
 .done-view__btn {
@@ -51,32 +42,28 @@
   align-items: center;
   justify-content: center;
   gap: 8px;
-  height: 44px;
-  padding: 0 18px;
-  border-radius: 9999px;
+  width: 240px;
+  height: 45px;
+  border-radius: 14px;
   font-family: 'Inter', sans-serif;
-  font-weight: 600;
+  font-weight: 500;
   font-size: 14px;
   letter-spacing: -0.01em;
   cursor: pointer;
-  border: 1px solid transparent;
+  border: none;
   transition:
     background 200ms ease-out,
-    border-color 200ms ease-out,
     color 200ms ease-out,
     opacity 200ms ease-out;
 }
 
 .done-view__btn--primary {
-  background: #18181b;
-  border-color: #27272a;
-  color: #fafafa;
+  background: #ff4b3a;
+  color: #ffffff;
 }
 
 .done-view__btn--primary:hover:not(:disabled) {
-  background: #27272a;
-  border-color: rgba(255, 75, 58, 0.4);
-  color: #ff4b3a;
+  background: #e8412f;
 }
 
 .done-view__btn--primary:disabled {
@@ -86,14 +73,11 @@
 
 .done-view__btn--ghost {
   background: transparent;
-  color: #71717a;
-  font-weight: 500;
-  height: 32px;
-  padding: 0 10px;
+  color: #9f9fa9;
 }
 
 .done-view__btn--ghost:hover {
-  color: #a1a1aa;
+  color: #fafafa;
 }
 
 .done-view__btn:focus-visible {
