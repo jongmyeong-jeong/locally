@@ -311,14 +311,26 @@ def cut_piece(src: Path, rng: SplitRange, dest_dir: Path) -> Path:
     """
     import subprocess as _sp
 
-    from app.audio_io import AudioIOError, _resolve_ffmpeg, probe_audio_encoders
+    from app.audio_io import (
+        OPUS_COMPRESSION_LEVEL,
+        REENCODE_TIMEOUT_SEC,
+        AudioIOError,
+        _resolve_ffmpeg,
+        probe_audio_encoders,
+    )
 
     ffmpeg = _resolve_ffmpeg()
     encoders = probe_audio_encoders()
 
     if "libopus" in encoders:
         suffix = ".ogg"
-        codec_args = ["-c:a", "libopus", "-b:a", "24k", "-vbr", "on", "-f", "ogg"]
+        codec_args = [
+            "-c:a", "libopus",
+            "-b:a", "24k",
+            "-vbr", "on",
+            "-compression_level", OPUS_COMPRESSION_LEVEL,
+            "-f", "ogg",
+        ]
     elif "flac" in encoders:
         suffix = ".flac"
         codec_args = ["-c:a", "flac", "-f", "flac"]
@@ -346,7 +358,9 @@ def cut_piece(src: Path, rng: SplitRange, dest_dir: Path) -> Path:
         cmd,
         capture_output=True,
         check=False,
-        timeout=120,
+        # A single piece can hold up to ~2h of audio (20MB at 24kbps) — the
+        # same hour-scale encode budget as reencode_for_upload applies.
+        timeout=REENCODE_TIMEOUT_SEC,
     )
     if result.returncode != 0:
         stderr_text = result.stderr.decode("utf-8", errors="replace")[-512:]

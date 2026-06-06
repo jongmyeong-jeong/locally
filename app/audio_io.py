@@ -131,6 +131,17 @@ def probe_audio_encoders() -> frozenset[str]:
 # Re-encode for upload
 # ---------------------------------------------------------------------------
 
+# Hang protection for hour-scale encodes. Measured on Apple Silicon:
+# libopus at compression_level 5 encodes ~70-100x realtime, so 1800s covers
+# well over a full day of audio. The previous 120s default aborted an 85-min
+# recording mid-encode (encode measured at ~36x realtime at level 10).
+REENCODE_TIMEOUT_SEC = 1800
+
+# Opus encoder effort. Level 5 is ~2x faster than the default 10 with a
+# quality delta that is irrelevant for STT input (Groq downsamples anyway).
+OPUS_COMPRESSION_LEVEL = "5"
+
+
 def reencode_for_upload(src: Path, dest_dir: Path) -> Path:
     """Re-encode *src* to 16 kHz mono for Groq upload; returns the output Path.
 
@@ -148,7 +159,13 @@ def reencode_for_upload(src: Path, dest_dir: Path) -> Path:
 
     if "libopus" in encoders:
         suffix = ".ogg"
-        codec_args = ["-c:a", "libopus", "-b:a", "24k", "-vbr", "on", "-f", "ogg"]
+        codec_args = [
+            "-c:a", "libopus",
+            "-b:a", "24k",
+            "-vbr", "on",
+            "-compression_level", OPUS_COMPRESSION_LEVEL,
+            "-f", "ogg",
+        ]
     elif "flac" in encoders:
         suffix = ".flac"
         codec_args = ["-c:a", "flac", "-f", "flac"]
@@ -175,7 +192,7 @@ def reencode_for_upload(src: Path, dest_dir: Path) -> Path:
         cmd,
         capture_output=True,
         check=False,
-        timeout=120,
+        timeout=REENCODE_TIMEOUT_SEC,
     )
     if result.returncode != 0:
         stderr_text = result.stderr.decode("utf-8", errors="replace")[-512:]
