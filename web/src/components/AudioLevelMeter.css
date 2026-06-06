@@ -12,5 +12,6 @@
   background-color: #ff4b3a;
   border-radius: 9999px;
   flex-shrink: 0;
-  transition: height 80ms ease-out;
+  /* Matched to the ~33ms scroll cadence — longer transitions smear the wave. */
+  transition: height 40ms linear;
 }

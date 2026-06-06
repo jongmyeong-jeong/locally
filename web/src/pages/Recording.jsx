@@ -350,11 +350,15 @@ export default function Recording() {
     handleStop()
   }, [closeErrorModal, handleStop])
 
-  const handleDownload = useCallback(() => {
+  const handleDownload = useCallback(async () => {
     const nid = noteIdRef.current ?? noteId
     if (!nid) return
-    api.downloadNote(nid)
-  }, [noteId])
+    try {
+      await api.downloadNote(nid)
+    } catch (err) {
+      openErrorModal('download_failed', err?.message ?? null)
+    }
+  }, [noteId, openErrorModal])
 
   // beforeunload: warn user and try to flush a final chunk
   useEffect(() => {

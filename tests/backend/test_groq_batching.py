@@ -97,7 +97,7 @@ async def _make_queue(session_id: str = "sess-1") -> tuple[SessionTranscribeQueu
     """Return (queue, fired_callbacks). Queue is started."""
     fired: list[tuple] = []
 
-    async def _cb(session_id, seq, start_ms, end_ms, text, *, segments=None):
+    async def _cb(session_id, seq, start_ms, end_ms, text, *, segments=None, note_id=None):
         fired.append((session_id, seq, start_ms, end_ms, text))
 
     q = SessionTranscribeQueue(session_id, "note-1", prompt=None)
@@ -250,7 +250,7 @@ async def test_retry_4_failures_then_success(mock_concat, mock_db):
 
     fired = []
 
-    async def _cb(session_id, seq, start_ms, end_ms, text, *, segments=None):
+    async def _cb(session_id, seq, start_ms, end_ms, text, *, segments=None, note_id=None):
         fired.append((start_ms, end_ms))
 
     import app.transcribe_queue as tq_mod
@@ -416,3 +416,59 @@ async def test_live_failed_latch_discards_push(mock_concat, mock_db):
         assert q._pending_chunks == []
     finally:
         await q.stop()
+
+
+@pytest.mark.asyncio
+async def test_batch_anchors_text_on_member_row_with_late_bound_note_id(
+    mock_transcribe, mock_concat, mock_db
+):
+    """Regression for the session/note id mismatch family of bugs.
+
+    1. The queue must NOT insert a synthetic batch row — under the real note id
+       it would collide with the first member row on UNIQUE(note_id, seq).
+       The first member chunk row is the batch's text carrier instead.
+    2. The chunk_transcribed callback must receive the late-bound note id so
+       sidecar segment files are keyed by note_id even after finalize has
+       popped the recording session.
+    """
+    import app.transcribe_queue as tq_mod
+    captured_note_ids: list = []
+
+    async def _capture_cb(
+        session_id, seq, start_ms, end_ms, text, *, segments=None, note_id=None
+    ):
+        captured_note_ids.append(note_id)
+
+    tq_mod._on_chunk_transcribed = _capture_cb
+    tq_mod._on_groq_error = None
+
+    # Placeholder construction, exactly like create_recording does.
+    q = SessionTranscribeQueue("sess-rebind-1", "sess-rebind-1", prompt=None)
+    await q.start()
+
+    try:
+        q.set_note_id("note-real")
+        for i in range(6):
+            # chunk_id 100+i ≠ seq i, so the anchor assertion below cannot
+            # accidentally pass via a seq value.
+            job = _make_chunk_job(
+                100 + i, i, start_ms=i * 10_000, duration_ms=10_000, note_id="note-real"
+            )
+            await q.push(job)
+        await q.drain()
+
+        # No synthetic batch row — no UNIQUE(note_id, seq) collision possible.
+        assert mock_db["insert"].call_count == 0
+        # Anchor row (first member, chunk_id=100) carries the batch text.
+        anchor_calls = [
+            c
+            for c in mock_db["update"].call_args_list
+            if c.args[1] == 100 and c.args[2] == "success" and c.args[3] == "hello"
+        ]
+        assert anchor_calls, (
+            f"No success+text update on anchor row: {mock_db['update'].call_args_list}"
+        )
+        assert captured_note_ids == ["note-real"]
+    finally:
+        await q.stop()
+        tq_mod._on_chunk_transcribed = None

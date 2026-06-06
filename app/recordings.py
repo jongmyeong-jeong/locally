@@ -168,13 +168,21 @@ def append_chunk_stream(
         if needs_note:
             if conn is None:
                 raise RuntimeError("append_chunk requires conn when creating a note")
-            basename = audio_basename(session_title, datetime.now())
-            audio_path = audio_dir() / f"{basename}.webm"
+            # Create the note first so its id can suffix the audio basename —
+            # without the suffix, same-title recordings collide on the same
+            # .webm and finalize silently overwrites the previous audio.
             note = create_note(
                 conn,
                 title=session_title,
-                audio_path=str(audio_path),
                 status="recording",
+            )
+            basename = audio_basename(
+                session_title, datetime.now(), note_id=note["id"]
+            )
+            update_note(
+                conn,
+                note["id"],
+                audio_path=str(audio_dir() / f"{basename}.webm"),
             )
             note_id = _attach_note_id(session_id, note["id"])
         return {"noteId": note_id, "bytes_written": bytes_written}
@@ -259,16 +267,28 @@ def finalize(
 
     if session.note_id is None:
         # seq=0 must have been appended to create the note, but be defensive.
-        basename = audio_basename(title or session.title, datetime.now())
-        dest = audio_dir() / f"{basename}.webm"
-        note = create_note(conn, title=title or session.title, audio_path=str(dest))
+        # Note first, path second — the note id suffix keeps same-title
+        # recordings from colliding (audio_path is set by update_note below).
+        note = create_note(conn, title=title or session.title)
         session.note_id = note["id"]
+        basename = audio_basename(
+            title or session.title, datetime.now(), note_id=note["id"]
+        )
+        dest = audio_dir() / f"{basename}.webm"
     else:
         note = _fetch_note(conn, session.note_id)
         if note is None:
             raise KeyError(f"note not found: {session.note_id}")
         dest = Path(note["audioPath"]) if note["audioPath"] else (
-            audio_dir() / f"{audio_basename(title or session.title, datetime.now())}.webm"
+            audio_dir()
+            / (
+                audio_basename(
+                    title or session.title,
+                    datetime.now(),
+                    note_id=session.note_id,
+                )
+                + ".webm"
+            )
         )
 
     tmp_path = _session_tmp_path(session_id)

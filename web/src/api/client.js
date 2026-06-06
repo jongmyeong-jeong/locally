@@ -159,14 +159,29 @@ const deleteNote = (id, { deleteAudio = false } = {}) =>
     { method: 'DELETE' },
   )
 
-// Download note transcript as .md file (Wave 1 endpoint)
-const downloadNote = (id) => {
+// Download note transcript as .md file (Wave 1 endpoint).
+// Fetch-based so HTTP errors throw instead of the browser saving the
+// error-JSON body as a file (the old <a download> approach did exactly that).
+const downloadNote = async (id) => {
+  const res = await fetch(`/api/notes/${encodeURIComponent(id)}/download`)
+  if (!res.ok) throw await parseError(res)
+  const blob = await res.blob()
+  const disposition = res.headers.get('content-disposition') || ''
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i)
+  const asciiMatch = disposition.match(/filename="([^"]+)"/i)
+  const filename = utf8Match
+    ? decodeURIComponent(utf8Match[1])
+    : asciiMatch
+      ? asciiMatch[1]
+      : 'transcript.md'
+  const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
-  a.href = `/api/notes/${encodeURIComponent(id)}/download`
-  a.download = ''
+  a.href = url
+  a.download = filename
   document.body.appendChild(a)
   a.click()
   document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }
 
 // Plan §4.2 Recordings (AC-7 / Phase F).

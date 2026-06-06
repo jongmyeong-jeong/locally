@@ -2,15 +2,21 @@ import { useEffect, useRef, useState } from 'react'
 import './AudioLevelMeter.css'
 
 const NUM_BARS = 30
-const ALPHA = 0.4
-// Silence cutoffs — calibrated for typical mic noise floors.
-// If the mean across all bars is below GLOBAL_SILENCE, every bar collapses
-// to the flat resting height (a uniform row of dots). Otherwise each bar
-// that falls below PER_BAR_FLOOR also rests at FLAT_HEIGHT.
-const GLOBAL_SILENCE = 4
-const PER_BAR_FLOOR = 14
-const MAX_BAR_HEIGHT = 48
 const FLAT_HEIGHT = 6 // resting height — matches bar width so each bar is a circle
+const MAX_BAR_HEIGHT = 48
+
+// Scrolling-level tuning.
+// - Loudness (RMS of the time-domain waveform, 0..1) below SILENCE_LEVEL is
+//   treated as mic noise floor and rests at FLAT_HEIGHT.
+// - Normal speech RMS sits around 0.05–0.3, so LEVEL_GAIN×level saturates the
+//   bar near a raised voice; the 0.8 exponent lifts quiet speech perceptually.
+// - The strip scrolls one bar every SCROLL_EVERY_N_FRAMES rAF frames
+//   (~30 columns/s at 60 fps → a full sweep across 30 bars in ~1 s).
+const SILENCE_LEVEL = 0.015
+const LEVEL_GAIN = 4
+const LEVEL_EXPONENT = 0.8
+const EMA_ALPHA = 0.5
+const SCROLL_EVERY_N_FRAMES = 2
 
 // Stable per-bar opacity (Figma node 492:160) — gives visual variety
 // without re-randomising every render.
@@ -22,12 +28,20 @@ const BAR_OPACITIES = [
 
 const FLAT_HEIGHTS = new Array(NUM_BARS).fill(FLAT_HEIGHT)
 
+function levelToHeight(level) {
+  if (level < SILENCE_LEVEL) return FLAT_HEIGHT
+  const norm = Math.pow(Math.min(1, level * LEVEL_GAIN), LEVEL_EXPONENT)
+  return FLAT_HEIGHT + norm * (MAX_BAR_HEIGHT - FLAT_HEIGHT)
+}
+
 /**
  * AudioLevelMeter
  *
- * 30 vermilion bars driven by Web Audio AnalyserNode FFT data.
- * Each bar collapses to 0 height when its band is below the silence
- * floor, so quiet rooms render as completely empty (no stray tall bars).
+ * Scrolling loudness history (Voice-Memos style): each bar is one moment in
+ * time — the current mic level enters on the right and flows left, so the
+ * whole strip animates while speaking. A frequency-spectrum mapping was tried
+ * first but voice energy concentrates below ~1 kHz, which kept everything
+ * right of the first few bars permanently flat.
  *
  * Props:
  *   audioStream?: MediaStream | null
@@ -54,8 +68,14 @@ export default function AudioLevelMeter({ audioStream }) {
     try {
       source = audioContext.createMediaStreamSource(audioStream)
       analyser = audioContext.createAnalyser()
-      analyser.fftSize = 256
+      // Time-domain window: 1024 samples ≈ 21 ms @ 48 kHz — steady RMS.
+      analyser.fftSize = 1024
       source.connect(analyser)
+      // Autoplay policy: contexts created outside a direct user gesture start
+      // 'suspended', and a suspended analyser reads all-zero levels (flat bars).
+      if (audioContext.state === 'suspended') {
+        audioContext.resume().catch(() => {})
+      }
     } catch (err) {
       console.warn('AudioLevelMeter: cannot attach stream', err)
       setBarHeights(FLAT_HEIGHTS)
@@ -63,40 +83,31 @@ export default function AudioLevelMeter({ audioStream }) {
       return undefined
     }
 
-    const binCount = analyser.frequencyBinCount
-    const buffer = new Uint8Array(binCount)
-    const smoothed = new Array(NUM_BARS).fill(0)
-
-    const segments = []
-    for (let i = 0; i < NUM_BARS; i++) {
-      const start = Math.floor((i * binCount) / NUM_BARS)
-      const end = Math.floor(((i + 1) * binCount) / NUM_BARS)
-      segments.push({ start, end })
-    }
+    const timeBuffer = new Uint8Array(analyser.fftSize)
+    const levels = new Array(NUM_BARS).fill(0)
+    let smoothedLevel = 0
+    let frame = 0
 
     const tick = () => {
       rafRef.current = requestAnimationFrame(tick)
-      analyser.getByteFrequencyData(buffer)
+      analyser.getByteTimeDomainData(timeBuffer)
 
-      for (let i = 0; i < NUM_BARS; i++) {
-        const { start, end } = segments[i]
-        let sum = 0
-        for (let j = start; j < end; j++) sum += buffer[j]
-        const raw = sum / (end - start)
-        smoothed[i] = ALPHA * raw + (1 - ALPHA) * smoothed[i]
+      // RMS of the waveform around the 128 midpoint → loudness 0..1.
+      let sumSquares = 0
+      for (let i = 0; i < timeBuffer.length; i++) {
+        const deviation = (timeBuffer[i] - 128) / 128
+        sumSquares += deviation * deviation
       }
+      const rms = Math.sqrt(sumSquares / timeBuffer.length)
+      smoothedLevel = EMA_ALPHA * rms + (1 - EMA_ALPHA) * smoothedLevel
 
-      const mean = smoothed.reduce((acc, n) => acc + n, 0) / NUM_BARS
-      if (mean < GLOBAL_SILENCE) {
-        setBarHeights(FLAT_HEIGHTS)
-        return
-      }
-
-      const heights = smoothed.map((v) => {
-        if (v < PER_BAR_FLOOR) return FLAT_HEIGHT
-        return FLAT_HEIGHT + (v / 255) * (MAX_BAR_HEIGHT - FLAT_HEIGHT)
-      })
-      setBarHeights(heights)
+      // Advance the strip every Nth frame: drop the oldest (left), push the
+      // newest level (right).
+      frame += 1
+      if (frame % SCROLL_EVERY_N_FRAMES !== 0) return
+      levels.shift()
+      levels.push(smoothedLevel)
+      setBarHeights(levels.map(levelToHeight))
     }
 
     rafRef.current = requestAnimationFrame(tick)

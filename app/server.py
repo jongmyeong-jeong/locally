@@ -87,6 +87,10 @@ _VAD_DETECTORS: dict[str, vad_realtime.ChunkBoundaryDetector] = {}
 _VAD_LOCKS: dict[str, asyncio.Lock] = {}
 # Boundary-chunk seq counter per session (for recording_chunks.insert_chunk).
 _CHUNK_SEQ: dict[str, int] = {}
+# Header-donor blob per session: (path to the seq-0 blob copy, its PCM sample
+# count). MediaRecorder timeslice blobs after the first carry no webm init
+# segment, so they can only be decoded with this header prepended.
+_VAD_HEADERS: dict[str, tuple[Path, int]] = {}
 
 # ---------------------------------------------------------------------------
 # Per-session SSE queues for transcript-stream channel
@@ -119,18 +123,29 @@ async def _push_chunk_transcribed(
     text: str,
     *,
     segments: list[dict] | None = None,
+    note_id: str | None = None,
 ) -> None:
     """Push a chunk_transcribed SSE event to the per-session queue, if registered.
 
     Side-effect: if segments is not None, persist them as a sidecar JSON file
     so the download endpoint can reconstruct fine-grained segment data later.
-    The note_id is obtained from the active recording session (session_id == note_id
-    for live recordings started via POST /api/recordings).
+    note_id comes from the queue (late-bound); the session lookup is a fallback
+    for batches transcribed before the binding — finalize-time batches can't use
+    the session because finalize() has already popped it.
     """
-    # Persist segments sidecar (note_id == session_id for live recordings).
+    # Persist segments sidecar keyed by note_id — the download endpoint globs
+    # segments-{note_id}-*.json, so a session_id-keyed file would never be found.
     if segments is not None:
         try:
-            sidecar = _sidecar_segments_path(session_id, seq)
+            sidecar_note_id = note_id
+            if not sidecar_note_id:
+                session = recordings_mod.get_session(session_id)
+                sidecar_note_id = (
+                    session.note_id
+                    if session is not None and session.note_id
+                    else session_id
+                )
+            sidecar = _sidecar_segments_path(sidecar_note_id, seq)
             sidecar_payload = json.dumps(
                 {"seq": seq, "segments": segments}, ensure_ascii=False
             )
@@ -193,10 +208,13 @@ def _groq_api_key_set() -> bool:
 
 
 def _cleanup_session_live_state(session_id: str) -> None:
-    """Remove VAD detector, lock, and chunk-seq counter for session_id."""
+    """Remove VAD detector, lock, chunk-seq counter, and header blob for session_id."""
     _VAD_DETECTORS.pop(session_id, None)
     _VAD_LOCKS.pop(session_id, None)
     _CHUNK_SEQ.pop(session_id, None)
+    header = _VAD_HEADERS.pop(session_id, None)
+    if header is not None:
+        header[0].unlink(missing_ok=True)
 
 
 def _sse_event(name: str, payload: dict) -> bytes:
@@ -304,6 +322,40 @@ def _materialize_vad_jobs(
                 )
             )
     return jobs
+
+
+def _decode_chunk_pcm(session_id: str, seq: int, chunk_path: Path):
+    """Decode one uploaded MediaRecorder blob to 16 kHz mono PCM for VAD.
+
+    With MediaRecorder.start(timeslice), only the first blob carries the webm
+    initialization segment (EBML header + tracks); later blobs are bare
+    continuation clusters that ffmpeg rejects standalone ("EBML header parsing
+    failed").  Remedy: keep the header-bearing first blob per session, decode
+    ``header_blob + chunk`` concatenated — a byte-exact prefix of the original
+    stream — then slice off the header blob's samples (its PCM length is known
+    from the first decode).
+    """
+    header = _VAD_HEADERS.get(session_id)
+    if header is None:
+        # First decodable blob — decode standalone and become the header donor.
+        pcm = audio_io.load_pcm_16k_mono(str(chunk_path))
+        header_copy = (
+            Path(tempfile.gettempdir()) / f"{session_id}_webm_header.webm"
+        )
+        shutil.copyfile(chunk_path, header_copy)
+        _VAD_HEADERS[session_id] = (header_copy, int(pcm.size))
+        return pcm
+
+    header_path, header_samples = header
+    combo_path = Path(tempfile.gettempdir()) / f"{session_id}_combo_{seq}.webm"
+    try:
+        with combo_path.open("wb") as out:
+            out.write(header_path.read_bytes())
+            out.write(chunk_path.read_bytes())
+        full = audio_io.load_pcm_16k_mono(str(combo_path))
+    finally:
+        combo_path.unlink(missing_ok=True)
+    return full[header_samples:]
 
 
 def _append_recording_chunk_sync(
@@ -623,19 +675,28 @@ def create_app() -> FastAPI:
         tmp_path = await asyncio.to_thread(_write_md)
 
         # 7. Build a safe filename (ASCII + RFC 5987 UTF-8 fallback).
-        date_str = recorded_at.strftime("%Y-%m-%d")
+        # Local-time stamp down to seconds so every recording downloads under a
+        # unique name instead of piling up "name (1).md" browser dedupe suffixes.
+        # The 'untitled' placeholder is omitted — it adds no information.
+        stamp = recorded_at.astimezone().strftime("%Y-%m-%d-%H%M%S")
+        has_real_title = note_title != "untitled"
         # ASCII-safe: strip non-ASCII for the plain filename= token.
         ascii_title = (
             unicodedata.normalize("NFKD", note_title)
             .encode("ascii", "ignore")
             .decode("ascii")
             .strip()
-            or "transcript"
         )
-        ascii_filename = f"{date_str}-{ascii_title}.md"
+        ascii_filename = (
+            f"{stamp}-{ascii_title}.md"
+            if has_real_title and ascii_title
+            else f"{stamp}.md"
+        )
         # Percent-encode the UTF-8 version for filename*= (RFC 5987).
         from urllib.parse import quote as _url_quote
-        utf8_filename = f"{date_str}-{note_title}.md"
+        utf8_filename = (
+            f"{stamp}-{note_title}.md" if has_real_title else f"{stamp}.md"
+        )
         encoded_filename = _url_quote(utf8_filename, safe="")
         content_disposition = (
             f"attachment; filename=\"{ascii_filename}\"; "
@@ -767,16 +828,26 @@ def create_app() -> FastAPI:
             # -- VAD feed + queue push (only when live state exists). --
             if detector is not None and chunk_temp_path is not None:
                 note_id = result.get("noteId")
-                # Decode per-chunk temp file to PCM for VAD.
+                # Late-bind the real note id (created by the seq=0 chunk) so the
+                # queue keys batch rows by note_id, not the session_id placeholder.
+                if note_id:
+                    sq_bind = await transcribe_queue.get_session_queue(session_id)
+                    if sq_bind is not None:
+                        sq_bind.set_note_id(note_id)
+                # Decode per-chunk temp file to PCM for VAD. Blobs after the
+                # first need the session's header blob prepended (see
+                # _decode_chunk_pcm) or ffmpeg rejects them outright.
                 try:
                     pcm = await asyncio.to_thread(
-                        audio_io.load_pcm_16k_mono, str(chunk_temp_path)
+                        _decode_chunk_pcm, session_id, int(seq), chunk_temp_path
                     )
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "vad_decode_error",
                         {"session_id": session_id, "seq": seq, "error": str(exc)},
                     )
+                    pcm = None
+                if pcm is not None and pcm.size == 0:
                     pcm = None
 
                 if pcm is not None:
@@ -905,23 +976,25 @@ def create_app() -> FastAPI:
                 note_id_ref[0] = note_id
                 session_audio_path: str = result["audioPath"]
 
-                # 2. Flush VAD detector to drain any remaining internal buffer.
-                # flush() returns the time range of buffered audio but does not
-                # produce a WAV file — the VAD pipeline captures complete speech
-                # segments during feed(). Any sub-threshold tail is discarded here.
+                # 2. Flush the VAD detector. The buffered tail (audio after the
+                #    last emitted boundary — the entire recording when no
+                #    boundary ever fired) is rescued as a final chunk job in the
+                #    transcribe path so the last utterance isn't dropped.
+                #    flush() itself returns None for all-silent tails; in
+                #    skip_transcribe mode the buffer is discarded with the session.
                 detector = _VAD_DETECTORS.get(session_id)
-                if detector is not None:
+                tail_boundary = None
+                tail_seq = 0
+                if detector is not None and not skip_transcribe:
                     lock = _VAD_LOCKS.get(session_id)
-                    if lock is not None:
-                        async with lock:
-                            discarded = detector.flush()
-                    else:
-                        discarded = detector.flush()
-                    if discarded:
-                        logger.info(
-                            "vad_flush_discarded",
-                            {"discarded_ms_range": discarded},
-                        )
+                    if lock is None:
+                        lock = asyncio.Lock()
+                        _VAD_LOCKS[session_id] = lock
+                    async with lock:
+                        tail_boundary = detector.flush()
+                        if tail_boundary is not None:
+                            tail_seq = _CHUNK_SEQ.get(session_id, 0)
+                            _CHUNK_SEQ[session_id] = tail_seq + 1
 
                 if skip_transcribe:
                     # skip_transcribe path: audio file already moved; just
@@ -950,6 +1023,26 @@ def create_app() -> FastAPI:
                     )
                     sq = await transcribe_queue.get_session_queue(session_id)
                     if sq is not None:
+                        # Rescue the flushed VAD tail as the final chunk job
+                        # before draining, so it rides the same batch pipeline.
+                        if tail_boundary is not None:
+                            tail_jobs = await asyncio.to_thread(
+                                _materialize_vad_jobs,
+                                session_id,
+                                note_id,
+                                tail_seq,
+                                [tail_boundary],
+                            )
+                            for job in tail_jobs:
+                                await sq.push(job)
+                            logger.info(
+                                "vad_flush_rescued",
+                                {
+                                    "note_id": note_id,
+                                    "start_ms": tail_boundary[0],
+                                    "end_ms": tail_boundary[1],
+                                },
+                            )
                         await sq.drain(retry_sleep_sec=5, max_retries=5)
                     await queue.put(
                         _sse_event("progress", {"status": "drained"})

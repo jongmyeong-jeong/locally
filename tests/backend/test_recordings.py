@@ -55,6 +55,31 @@ class TestSeqAppend:
         assert Path(out["audioPath"]).exists()
 
 
+class TestAudioPathUniqueness:
+    def test_same_title_recordings_keep_separate_audio_files(self, conn):
+        """Regression: the audio basename must include the note id.
+
+        Without the suffix two same-title recordings resolve to the same
+        .webm and the second finalize overwrites the first recording's audio.
+        """
+        outs = []
+        for payload in (b"\x01" * 64, b"\x02" * 64):
+            sess = recordings.start_session(title="demo")
+            sid = sess["id"]
+            recordings.append_chunk(conn, sid, payload, 0)
+            outs.append(recordings.finalize(conn, sid, duration_sec=30.0))
+
+        first, second = outs
+        assert first["audioPath"] != second["audioPath"]
+        assert Path(first["audioPath"]).exists()
+        assert Path(second["audioPath"]).exists()
+        # The note id suffix is what guarantees uniqueness.
+        assert first["noteId"][:8] in first["audioPath"]
+        assert second["noteId"][:8] in second["audioPath"]
+        # First recording's bytes survive the second finalize.
+        assert Path(first["audioPath"]).read_bytes() == b"\x01" * 64
+
+
 class TestDuplicateSeq:
     def test_duplicate_seq_raises_conflict(self, conn):
         sess = recordings.start_session(title="demo")

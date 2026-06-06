@@ -145,6 +145,15 @@ class SessionTranscribeQueue:
     # Public API
     # ------------------------------------------------------------------
 
+    def set_note_id(self, note_id: str) -> None:
+        """Late-bind the real note id once the seq=0 chunk has created the note.
+
+        The queue is constructed before the note exists (create_recording passes
+        session_id as a placeholder), so batch rows would otherwise be keyed by
+        session_id and never found by finalize/download (which query by note_id).
+        """
+        self._note_id = note_id
+
     async def start(self) -> None:
         """Idempotent — start the background worker task if not already running."""
         if self._worker_task is None or self._worker_task.done():
@@ -279,25 +288,20 @@ class SessionTranscribeQueue:
         """Concatenate WAVs, call groq, handle retries and errors."""
         chunk_ids = [c.chunk_id for c in batch.chunks]
         wav_paths = [Path(c.audio_path) for c in batch.chunks]
-        # Declared early so the worker-loop's except path can pass it to
-        # _mark_batch_failed even when the insert below fails (M3).
-        batch_chunk_id: int | None = None
+        # The batch's first member chunk row doubles as its text/status carrier.
+        # Inserting a separate batch row under the real note id would violate
+        # UNIQUE(note_id, seq) — that member row already owns the same seq.
+        batch_chunk_id: int | None = (
+            batch.chunks[0].chunk_id if batch.chunks else None
+        )
         # Declared early so the try/finally safety net can clean it up on any
         # unexpected exception that bypasses the per-error _cleanup() calls (M6).
         batch_wav: Path | None = None
 
         try:
-            # 1. Insert the batch row + flip VAD chunk rows in a single connection.
+            # 1. Flip member VAD chunk rows to 'transcribing'.
             with closing(db.open_db()) as conn:
-                batch_chunk_id = recording_chunks.insert_chunk(
-                    conn,
-                    self._note_id,
-                    batch.seq,
-                    batch.start_ms,
-                    batch.end_ms,
-                )
-                recording_chunks.update_chunk_status(conn, batch_chunk_id, "transcribing")
-                self._safe_bulk_update_status(conn, chunk_ids, "transcribing")
+                recording_chunks.bulk_update_status(conn, chunk_ids, "transcribing")
 
             # 3. Concatenate WAV files into a temp file.
             try:
@@ -451,6 +455,7 @@ class SessionTranscribeQueue:
                         batch.end_ms,
                         text,
                         segments=payload_segments,
+                        note_id=self._note_id,
                     )
                 except Exception:  # noqa: BLE001
                     logger.warning(
@@ -532,6 +537,9 @@ class SessionTranscribeQueue:
         error_type: str = "unknown",
     ) -> None:
         """Persist 'failed' status, record in failed_ranges, decrement counter."""
+        if batch_chunk_id is None and batch.chunks:
+            # Anchor row — same fallback the success path uses for text.
+            batch_chunk_id = batch.chunks[0].chunk_id
         if batch_chunk_id is not None:
             try:
                 with closing(db.open_db()) as conn:
@@ -574,8 +582,10 @@ def _cleanup(path: Path | None) -> None:
 #   async (session_id: str, seq: int, start_ms: int, end_ms: int, text: str) -> None
 # Extended signature (after G1.3):
 #   async (session_id: str, seq: int, start_ms: int, end_ms: int, text: str,
-#          *, segments: list[dict] | None = None) -> None
+#          *, segments: list[dict] | None = None, note_id: str | None = None) -> None
 # Each segment dict: {"start_ms": int, "end_ms": int, "text": str}
+# note_id is the queue's late-bound note id — callers need it because the
+# recording session may already be gone when finalize-time batches complete.
 _on_chunk_transcribed = None
 
 

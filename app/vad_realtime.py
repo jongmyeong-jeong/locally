@@ -45,6 +45,9 @@ class ChunkBoundaryDetector:
     MIN_CHUNK_MS: int = 5_000
     MAX_CHUNK_MS: int = 30_000
     SILENCE_MS: int = 700  # midpoint of 500–1000 ms spec range
+    # flush() tails shorter than this carry no transcribable speech — feeding
+    # them to Whisper-family models invites hallucinated text.
+    MIN_FLUSH_MS: int = 300
 
     def __init__(self) -> None:
         # PCM buffer for the current (not-yet-emitted) chunk.
@@ -76,18 +79,28 @@ class ChunkBoundaryDetector:
 
         return boundaries
 
-    def flush(self) -> tuple[int, int] | None:
+    def flush(self) -> tuple[int, int, np.ndarray] | None:
         """Force-emit remaining accumulated audio as a final boundary.
 
-        Returns None when there is no accumulated audio.
+        Returns ``(start_ms, end_ms, pcm_slice)`` matching feed() boundaries so
+        the caller can transcribe the tail that never met an emit condition
+        (e.g. a short recording, or speech right before stop).  Returns None
+        when the buffer is empty, shorter than MIN_FLUSH_MS, or contains no
+        speech frames — transcribing silent or sub-word tails only invites
+        hallucinated text.  The buffer is cleared in every case.
         """
         if self._buffer.size == 0:
             return None
-        end_ms = self._chunk_start_ms + _samples_to_ms(self._buffer.size)
-        result = (self._chunk_start_ms, end_ms)
+        start_ms = self._chunk_start_ms
+        end_ms = start_ms + _samples_to_ms(self._buffer.size)
+        pcm_slice = self._buffer
         self._buffer = np.empty(0, dtype=np.float32)
         self._chunk_start_ms = end_ms
-        return result
+        if end_ms - start_ms < self.MIN_FLUSH_MS:
+            return None
+        if not self._has_speech(pcm_slice):
+            return None
+        return (start_ms, end_ms, pcm_slice)
 
     @property
     def accumulated_ms(self) -> int:
@@ -129,6 +142,19 @@ class ChunkBoundaryDetector:
         self._buffer = self._buffer[cut:]
         self._chunk_start_ms = end_ms
         return (start_ms, end_ms, pcm_slice)
+
+    @staticmethod
+    def _has_speech(buf: np.ndarray) -> bool:
+        """True when any RMS frame is at or above the silence floor.
+
+        Sub-frame buffers (< FRAME_LEN samples ≈ one RMS window) are treated
+        as silence — too short to contain usable speech.
+        """
+        if buf.size < FRAME_LEN:
+            return False
+        windows = sliding_window_view(buf, window_shape=FRAME_LEN)[::HOP_LEN]
+        rms = np.sqrt(np.mean(windows.astype(np.float32) ** 2, axis=1))
+        return bool((rms >= THRESHOLD_FLOOR).any())
 
     def _find_silence_trigger(self) -> int | None:
         """Return end-of-speech offset (ms) if a qualifying silence run exists.

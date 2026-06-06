@@ -104,7 +104,8 @@ class TestChunkBoundaryDetector:
     def test_flush_emits_remaining_audio(self) -> None:
         """7 s speech with no silence — no boundary emitted on feed().
 
-        flush() must return (0, ~7000). A second flush() must return None.
+        flush() must return (0, ~7000, pcm) so the tail can be transcribed.
+        A second flush() must return None.
         """
         audio = pcm_speech(7.0)
         det = ChunkBoundaryDetector()
@@ -114,10 +115,13 @@ class TestChunkBoundaryDetector:
 
         result = det.flush()
         assert result is not None, "flush() should return a boundary for non-empty buffer"
-        start_ms, end_ms = result
+        start_ms, end_ms, pcm = result
         assert start_ms == 0, f"flush start should be 0, got {start_ms}"
         assert abs(end_ms - 7_000) < 50, (
             f"flush end should be ~7000 ms, got {end_ms}"
+        )
+        assert pcm.size == audio.size, (
+            f"flush pcm should carry the whole tail: {pcm.size} != {audio.size}"
         )
 
         # Second flush on empty buffer must return None
@@ -129,3 +133,54 @@ class TestChunkBoundaryDetector:
         det = ChunkBoundaryDetector()
         result = det.flush()
         assert result is None, f"flush() on empty detector should be None, got {result}"
+
+    def test_flush_sub_word_tail_returns_none(self) -> None:
+        """Tails shorter than MIN_FLUSH_MS (300 ms) are noise, not speech.
+
+        A 0.12 s loud tail (e.g. decoder padding artifacts) must be discarded —
+        Whisper hallucinates full sentences on such snippets.
+        """
+        det = ChunkBoundaryDetector()
+        det.feed(pcm_speech(0.12))
+
+        result = det.flush()
+        assert result is None, f"Sub-word tail should flush to None, got {result}"
+        assert det.accumulated_ms == 0, "flush() must clear the buffer"
+
+    def test_flush_all_silent_tail_returns_none(self) -> None:
+        """A buffered tail with no speech frames is discarded, not emitted.
+
+        Transcribing pure silence invites Whisper hallucinations, so flush()
+        must return None (and still clear the buffer).
+        """
+        det = ChunkBoundaryDetector()
+        boundaries = det.feed(pcm_silence(3.0))
+        assert boundaries == [], f"Silence must not emit boundaries, got {boundaries}"
+
+        result = det.flush()
+        assert result is None, f"Silent tail should flush to None, got {result}"
+        assert det.accumulated_ms == 0, "flush() must clear the buffer"
+
+    def test_flush_after_boundary_returns_only_residual(self) -> None:
+        """Tail after an emitted boundary flushes with continuous timestamps.
+
+        6 s speech + 0.8 s silence + 2 s speech: feed() emits the first chunk
+        (~6 s), flush() must return the residual starting where it ended.
+        """
+        audio = np.concatenate([
+            pcm_speech(6.0),
+            pcm_silence(0.8),
+            pcm_speech(2.0),
+        ])
+        det = ChunkBoundaryDetector()
+        boundaries = det.feed(audio)
+        assert len(boundaries) == 1, f"Expected one boundary, got {boundaries}"
+        _, first_end_ms, _ = boundaries[0]
+
+        result = det.flush()
+        assert result is not None, "Residual speech tail should be emitted"
+        start_ms, end_ms, pcm = result
+        assert start_ms == first_end_ms, (
+            f"flush must continue at {first_end_ms} ms, got {start_ms}"
+        )
+        assert end_ms > start_ms and pcm.size > 0

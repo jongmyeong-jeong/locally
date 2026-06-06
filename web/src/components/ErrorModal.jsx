@@ -108,6 +108,11 @@ const CONTENT = {
     body: '1초 이상 녹음해 주세요.',
     buttons: okButton,
   },
+  download_failed: {
+    title: '다운로드 실패',
+    body: '전사 파일을 내려받지 못했습니다. 잠시 후 다시 시도하세요.',
+    buttons: okButton,
+  },
 }
 
 function getContent(errorType) {
