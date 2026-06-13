@@ -1,4 +1,4 @@
-"""Tests for app.recording_chunks CRUD and all_chunks_done semantics."""
+"""Tests for app.recording_chunks CRUD and status transitions."""
 from __future__ import annotations
 
 import pytest
@@ -58,41 +58,13 @@ class TestUpdateChunkStatus:
         assert rows[0]["text"] == "hello"
 
     def test_update_chunk_status_to_failed(self, conn, note_id):
-        """update_chunk_status → 'failed' → get_failed_chunks returns the row."""
+        """update_chunk_status → 'failed' persists on the chunk row."""
         chunk_id = recording_chunks.insert_chunk(conn, note_id, seq=0, start_ms=0, end_ms=3000)
         recording_chunks.update_chunk_status(conn, chunk_id, "failed")
-        failed = recording_chunks.get_failed_chunks(conn, note_id)
-        assert len(failed) == 1
-        assert failed[0]["id"] == chunk_id
-        assert failed[0]["status"] == "failed"
-
-
-class TestAllChunksDone:
-    def test_all_chunks_done_only_when_all_success(self, conn, note_id):
-        """all_chunks_done → True only when all rows are 'success'; False for any non-success."""
-        ids = [
-            recording_chunks.insert_chunk(conn, note_id, seq=i, start_ms=i * 5000, end_ms=(i + 1) * 5000)
-            for i in range(3)
-        ]
-        # Initially all queued → False.
-        assert recording_chunks.all_chunks_done(conn, note_id) is False
-
-        # One success, two queued → False.
-        recording_chunks.update_chunk_status(conn, ids[0], "success", "a")
-        assert recording_chunks.all_chunks_done(conn, note_id) is False
-
-        # Two success, one failed → False.
-        recording_chunks.update_chunk_status(conn, ids[1], "success", "b")
-        recording_chunks.update_chunk_status(conn, ids[2], "failed")
-        assert recording_chunks.all_chunks_done(conn, note_id) is False
-
-        # Bring failed back to success (simulate recovery).
-        recording_chunks.update_chunk_status(conn, ids[2], "success", "c")
-        assert recording_chunks.all_chunks_done(conn, note_id) is True
-
-    def test_all_chunks_done_returns_false_for_zero_chunks(self, conn, note_id):
-        """all_chunks_done returns False when no rows exist (empty doc)."""
-        assert recording_chunks.all_chunks_done(conn, note_id) is False
+        rows = recording_chunks.get_chunks(conn, note_id)
+        assert len(rows) == 1
+        assert rows[0]["id"] == chunk_id
+        assert rows[0]["status"] == "failed"
 
 
 class TestGetChunksOrdering:

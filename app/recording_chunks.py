@@ -68,27 +68,6 @@ def update_chunk_status(
     conn.commit()
 
 
-def bulk_update_status(
-    conn: sqlite3.Connection,
-    chunk_ids: list[int],
-    status: str,
-) -> None:
-    """Update status for many chunk ids in a single statement. No-op on empty list."""
-    if not chunk_ids:
-        return
-    if status not in _ALLOWED_STATUSES:
-        raise ValueError(
-            f"Invalid chunk status {status!r}. Must be one of {sorted(_ALLOWED_STATUSES)}"
-        )
-    placeholders = ",".join("?" * len(chunk_ids))
-    conn.execute(
-        f"UPDATE recording_chunks SET status = ?, updated_at = ? "
-        f"WHERE id IN ({placeholders})",
-        [status, _now_iso(), *chunk_ids],
-    )
-    conn.commit()
-
-
 def get_chunks(conn: sqlite3.Connection, note_id: str) -> list[dict]:
     """Return all chunks for a note ordered by seq."""
     rows = conn.execute(
@@ -96,24 +75,3 @@ def get_chunks(conn: sqlite3.Connection, note_id: str) -> list[dict]:
         (note_id,),
     ).fetchall()
     return [_row_to_dict(r) for r in rows]
-
-
-def get_failed_chunks(conn: sqlite3.Connection, note_id: str) -> list[dict]:
-    """Return chunks with status='failed', ordered by seq."""
-    rows = conn.execute(
-        "SELECT * FROM recording_chunks WHERE note_id = ? AND status = 'failed' ORDER BY seq",
-        (note_id,),
-    ).fetchall()
-    return [_row_to_dict(r) for r in rows]
-
-
-def all_chunks_done(conn: sqlite3.Connection, note_id: str) -> bool:
-    """True iff every chunk has status='success'. False if no rows exist."""
-    row = conn.execute(
-        "SELECT COUNT(*) AS total, SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS done "
-        "FROM recording_chunks WHERE note_id = ?",
-        (note_id,),
-    ).fetchone()
-    total = row["total"]
-    done = row["done"] or 0
-    return total > 0 and total == done

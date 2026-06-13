@@ -503,7 +503,6 @@ class TestAllFail:
         assert result.all_failed is True
         assert result.partial_failure is False
         assert len(result.failed_ranges) == 2
-        assert result.full_text == ""
 
 
 # ---------------------------------------------------------------------------

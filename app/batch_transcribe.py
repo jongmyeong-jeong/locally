@@ -86,7 +86,6 @@ class BatchResult:
     ----------
     all_failed       — every piece failed (no text recovered)
     partial_failure  — at least one piece failed but not all
-    full_text        — plain-text join of successful piece texts (no markers)
     """
     pieces: list[PieceResult]
     failed_ranges: list[dict]  # [{start_ms: int, end_ms: int}]
@@ -99,11 +98,6 @@ class BatchResult:
     def partial_failure(self) -> bool:
         oks = [p.ok for p in self.pieces]
         return any(oks) and not all(oks)
-
-    @property
-    def full_text(self) -> str:
-        """Plain join of successful piece texts (no failure markers)."""
-        return " ".join(p.text for p in self.pieces if p.ok and p.text)
 
     def merged_text_with_failure_markers(self) -> str:
         """Text join with ``[hh:mm:ss–hh:mm:ss 전사 실패 구간]`` markers at failure positions.
