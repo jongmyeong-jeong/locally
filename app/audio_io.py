@@ -24,11 +24,23 @@ class AudioIOError(Exception):
 # Fallback: system ffmpeg on PATH (useful for development / CI without the bundle)
 _BUNDLED_FFMPEG = Path(__file__).resolve().parent.parent / "bin" / "ffmpeg"
 
+# Resolved ffmpeg path, cached for the process lifetime. The binary location
+# does not change while the server runs, so we avoid re-statting the filesystem
+# on every ffmpeg invocation (a single transcription resolves it 5-7 times).
+_RESOLVED_FFMPEG: Optional[str] = None
+
 
 def _resolve_ffmpeg() -> str:
-    """Locate ffmpeg binary; prefer bundled, fall back to PATH. Raises on miss."""
+    """Locate ffmpeg binary; prefer bundled, fall back to PATH. Raises on miss.
+
+    The result is cached after the first successful resolution.
+    """
+    global _RESOLVED_FFMPEG
+    if _RESOLVED_FFMPEG is not None:
+        return _RESOLVED_FFMPEG
     if _BUNDLED_FFMPEG.exists():
-        return str(_BUNDLED_FFMPEG)
+        _RESOLVED_FFMPEG = str(_BUNDLED_FFMPEG)
+        return _RESOLVED_FFMPEG
     system = shutil.which("ffmpeg")
     if system is None:
         raise AudioIOError(
@@ -36,7 +48,8 @@ def _resolve_ffmpeg() -> str:
             f"{_BUNDLED_FFMPEG} and no 'ffmpeg' on PATH. "
             "Install ffmpeg or ensure the bundled binary is present."
         )
-    return system
+    _RESOLVED_FFMPEG = system
+    return _RESOLVED_FFMPEG
 
 
 # ---------------------------------------------------------------------------
