@@ -207,12 +207,12 @@ class TestDuplicateSeq:
         r1 = _upload_chunk(client, sid, 0, first)
         assert r1.status_code == 200
 
-        tmp_path = recordings._session_tmp_path(sid)
-        assert tmp_path.read_bytes() == first
+        part_path = recordings._chunk_part_path(sid, 0)
+        assert part_path.read_bytes() == first
 
         r2 = _upload_chunk(client, sid, 0, second)
         assert r2.status_code == 409
-        assert tmp_path.read_bytes() == first
+        assert part_path.read_bytes() == first
 
     def test_negative_seq_returns_400(self, client):
         sid = client.post("/api/recordings", json={}).json()["id"]

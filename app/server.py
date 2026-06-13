@@ -258,6 +258,12 @@ def create_app() -> FastAPI:
         if moved:
             logger.info("transcripts_dir_migrated", {"moved_files": moved})
 
+        # Remove per-session recording temp dirs left by crashed sessions
+        # (the DB recovery above only touches rows, not the filesystem).
+        swept = recordings_mod.sweep_orphan_session_dirs()
+        if swept:
+            logger.info("orphan_recording_dirs_swept", {"count": swept})
+
         yield
 
         # Shutdown: wait for in-flight finalize tasks (max 120 s).

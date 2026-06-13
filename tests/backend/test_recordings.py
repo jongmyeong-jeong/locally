@@ -54,6 +54,40 @@ class TestSeqAppend:
         assert out["noteId"] is not None
         assert Path(out["audioPath"]).exists()
 
+    def test_out_of_order_uploads_concatenate_in_seq_order(self, conn):
+        """Core fix: finalize concatenates by seq, not by arrival order."""
+        sess = recordings.start_session(title="demo")
+        sid = sess["id"]
+        # Scrambled arrival order with distinct, identifiable payloads.
+        recordings.append_chunk(conn, sid, b"B" * 8, 1)
+        recordings.append_chunk(conn, sid, b"C" * 8, 2)
+        recordings.append_chunk(conn, sid, b"A" * 8, 0)
+
+        out = recordings.finalize(conn, sid, duration_sec=30.0)
+        data = Path(out["audioPath"]).read_bytes()
+        assert data == b"A" * 8 + b"B" * 8 + b"C" * 8
+
+
+class TestOrphanSweep:
+    def test_sweep_removes_dir_without_live_session(self):
+        """A crashed session leaves a temp dir with no in-memory session."""
+        orphan = recordings._session_tmp_path("dead-session")
+        orphan.mkdir(parents=True, exist_ok=True)
+        (orphan / "000000.part").write_bytes(b"x")
+
+        removed = recordings.sweep_orphan_session_dirs()
+        assert removed == 1
+        assert not orphan.exists()
+
+    def test_sweep_keeps_live_session_dir(self):
+        sess = recordings.start_session(title="live")
+        live_dir = recordings._session_tmp_path(sess["id"])
+        assert live_dir.exists()
+
+        removed = recordings.sweep_orphan_session_dirs()
+        assert removed == 0
+        assert live_dir.exists()
+
 
 class TestAudioPathUniqueness:
     def test_same_title_recordings_keep_separate_audio_files(self, conn):
@@ -96,12 +130,12 @@ class TestDuplicateSeq:
         second = b"B" * 10
 
         recordings.append_chunk(conn, sid, first, 0)
-        assert recordings._session_tmp_path(sid).read_bytes() == first
+        assert recordings._chunk_part_path(sid, 0).read_bytes() == first
 
         with pytest.raises(recordings.ChunkSeqConflict):
             recordings.append_chunk(conn, sid, second, 0)
 
-        assert recordings._session_tmp_path(sid).read_bytes() == first
+        assert recordings._chunk_part_path(sid, 0).read_bytes() == first
 
 
 class TestGapAtFinalize:

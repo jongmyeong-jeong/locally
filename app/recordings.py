@@ -73,10 +73,26 @@ _SESSIONS: dict[str, RecordingSession] = {}
 _LOCK = threading.Lock()
 
 
-def _session_tmp_path(session_id: str) -> Path:
+def _recordings_root() -> Path:
     root = app_home() / "tmp" / "recordings"
     root.mkdir(parents=True, exist_ok=True)
-    return root / f"{session_id}.webm"
+    return root
+
+
+def _session_tmp_path(session_id: str) -> Path:
+    """Return the session's working directory (one dir per session).
+
+    Each uploaded chunk is stored as its own ``<seq:06d>.part`` file inside this
+    directory; finalize concatenates them in seq order. Storing per-seq files
+    (rather than appending to a single shared file in arrival order) removes the
+    out-of-order / concurrent-append corruption window.
+    """
+    return _recordings_root() / session_id
+
+
+def _chunk_part_path(session_id: str, seq: int) -> Path:
+    """Return the per-chunk part-file path: ``<session_dir>/<seq:06d>.part``."""
+    return _session_tmp_path(session_id) / f"{seq:06d}.part"
 
 
 def start_session(title: str | None = None) -> dict:
@@ -84,8 +100,8 @@ def start_session(title: str | None = None) -> dict:
     session_id = str(uuid.uuid4())
     with _LOCK:
         _SESSIONS[session_id] = RecordingSession(id=session_id, title=title)
-    # Ensure the temp file exists but empty; simplifies later append semantics.
-    _session_tmp_path(session_id).write_bytes(b"")
+    # Create the per-session directory that will hold the chunk part files.
+    _session_tmp_path(session_id).mkdir(parents=True, exist_ok=True)
     return {
         "id": session_id,
         "uploadUrl": f"/api/recordings/{session_id}/chunk",
@@ -100,7 +116,7 @@ def try_start_session(title: str | None = None) -> dict | None:
             return None
         _SESSIONS[session_id] = RecordingSession(id=session_id, title=title)
     try:
-        _session_tmp_path(session_id).write_bytes(b"")
+        _session_tmp_path(session_id).mkdir(parents=True, exist_ok=True)
     except Exception:
         with _LOCK:
             _SESSIONS.pop(session_id, None)
@@ -117,13 +133,32 @@ def get_session(session_id: str) -> RecordingSession | None:
 
 
 def close_session(session_id: str) -> None:
-    """Drop in-memory session state and best-effort remove the temp upload file."""
+    """Drop in-memory session state and best-effort remove the temp session dir."""
     with _LOCK:
         _SESSIONS.pop(session_id, None)
-    try:
-        _session_tmp_path(session_id).unlink()
-    except FileNotFoundError:
-        pass
+    shutil.rmtree(_session_tmp_path(session_id), ignore_errors=True)
+
+
+def sweep_orphan_session_dirs() -> int:
+    """Remove per-session temp dirs that have no live in-memory session.
+
+    Run once at server startup: ``_SESSIONS`` is empty there, so every leftover
+    directory belongs to a session whose process died without finalizing or
+    closing (the DB-level recovery in the lifespan handler does not touch the
+    filesystem). The live-session check guards against deleting an active
+    recording if this is ever called mid-run. Returns the number removed.
+    """
+    root = app_home() / "tmp" / "recordings"
+    if not root.exists():
+        return 0
+    with _LOCK:
+        live = set(_SESSIONS)
+    removed = 0
+    for child in root.iterdir():
+        if child.is_dir() and child.name not in live:
+            shutil.rmtree(child, ignore_errors=True)
+            removed += 1
+    return removed
 
 
 def append_chunk(
@@ -155,10 +190,13 @@ def append_chunk_stream(
     require an additional in-memory bytes copy at the HTTP layer.
     """
     session_title, note_id, needs_note = _reserve_chunk(session_id, seq)
-    tmp_path = _session_tmp_path(session_id)
+    part_path = _chunk_part_path(session_id, seq)
+    part_path.parent.mkdir(parents=True, exist_ok=True)
     bytes_written = 0
     try:
-        with tmp_path.open("ab") as handle:
+        # Each seq writes its own file ("wb"), so concurrent uploads for
+        # different seqs never share a file handle and cannot interleave.
+        with part_path.open("wb") as handle:
             while True:
                 part = stream.read(chunk_size)
                 if not part:
@@ -291,18 +329,25 @@ def finalize(
             )
         )
 
-    tmp_path = _session_tmp_path(session_id)
+    session_dir = _session_tmp_path(session_id)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    # Move (rename if on same FS, else copy+unlink).
+    # Concatenate the per-seq part files in ascending seq order (NOT arrival
+    # order), so out-of-order uploads still produce a correctly-ordered stream.
+    part_files = sorted(session_dir.glob("*.part"), key=lambda p: int(p.stem))
+    # Write to a sibling temp file first, then rename atomically — an
+    # interrupted concat (disk full / crash) never leaves a corrupt file at the
+    # permanent audio path. tmp_dest lives in dest.parent so the rename is
+    # always same-filesystem.
+    tmp_dest = dest.with_name(dest.name + ".tmp")
     try:
-        tmp_path.replace(dest)
-    except OSError:
-        with tmp_path.open("rb") as src, dest.open("wb") as dst:
-            shutil.copyfileobj(src, dst)
-        try:
-            tmp_path.unlink()
-        except FileNotFoundError:
-            pass
+        with tmp_dest.open("wb") as dst:
+            for part_file in part_files:
+                with part_file.open("rb") as src:
+                    shutil.copyfileobj(src, dst)
+        tmp_dest.replace(dest)
+    finally:
+        tmp_dest.unlink(missing_ok=True)
+        shutil.rmtree(session_dir, ignore_errors=True)
 
     # live=True → 'finalizing' (real-time pre-transcription path); default 'pending' for legacy file-upload finalize
     status = "finalizing" if live else "pending"
