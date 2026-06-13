@@ -366,10 +366,13 @@ def create_app() -> FastAPI:
             await _write_upload_file(file, dest)
             audio_path = str(dest)
 
-        with db_mod.open_db() as conn:
-            note = db_mod.create_note(
-                conn, title=effective_title, audio_path=audio_path
-            )
+        def _create_note_sync() -> dict:
+            with db_mod.open_db() as conn:
+                return db_mod.create_note(
+                    conn, title=effective_title, audio_path=audio_path
+                )
+
+        note = await asyncio.to_thread(_create_note_sync)
         return JSONResponse(status_code=status.HTTP_201_CREATED, content=note)
 
     @app.get("/api/notes/{note_id}")
@@ -415,7 +418,10 @@ def create_app() -> FastAPI:
             note = _get_note_or_404(conn, note_id)
         if not note.get("transcriptPath"):
             raise HTTPException(status_code=404, detail="transcript not found")
-        content = Path(note["transcriptPath"]).read_text(encoding="utf-8")
+        try:
+            content = Path(note["transcriptPath"]).read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError):
+            raise HTTPException(status_code=404, detail="transcript file missing")
         return {"content": content, "segments": []}
 
     # ------------------------------------------------------------------
@@ -850,10 +856,14 @@ def create_app() -> FastAPI:
     # ------------------------------------------------------------------
     static_dir = Path(__file__).resolve().parent / "static"
     if static_dir.exists():
+        static_root = static_dir.resolve()
+
         @app.get("/{full_path:path}", include_in_schema=False)
         async def _spa_fallback(full_path: str) -> FileResponse:
-            candidate = static_dir / full_path
-            if candidate.is_file():
+            candidate = (static_dir / full_path).resolve()
+            # Containment guard: never serve a file resolved outside static_dir
+            # (defends against `../` path-traversal in the URL).
+            if candidate.is_relative_to(static_root) and candidate.is_file():
                 return FileResponse(candidate)
             # Hashed build assets must 404 when missing; otherwise the SPA
             # fallback would serve index.html (text/html) for a stale chunk
